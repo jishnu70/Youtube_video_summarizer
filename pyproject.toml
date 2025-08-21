@@ -1,0 +1,20 @@
+[project]
+name = "youtube-video-summarizer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "celery>=5.5.3",
+    "fastapi[standard]>=0.116.1",
+    "openai-whisper>=20250625",
+    "redis>=6.4.0",
+    "sentencepiece>=0.2.1",
+    "sqlalchemy>=2.0.43",
+    "torch>=2.8.0",
+    "torchaudio>=2.8.0",
+    "torchvision>=0.23.0",
+    "transformers>=4.55.2",
+    "uvicorn>=0.35.0",
+    "yt-dlp>=2025.8.20",
+]
