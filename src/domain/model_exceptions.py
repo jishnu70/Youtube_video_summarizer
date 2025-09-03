@@ -7,3 +7,7 @@ class UniqueIDError(Exception):
 class IncompleteError(Exception):
     """If the summary was not generated"""
     pass
+
+class VideoNotAvailableError(Exception):
+    """If the URL or video does not exists"""
+    pass
