@@ -1,3 +1,5 @@
+# src/infrastructure/database/mongo_service.py
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timezone
 from typing import Optional
@@ -9,17 +11,26 @@ class MongoService:
         uri: MongoDB connection string (local or Atlas cloud).
         db_name: database name (default = yt_summarizer).
         """
-        self.client = AsyncIOMotorClient(uri)
-        self.db = self.client[db_name]
-        self.collection = self.db["videos"]
+        self._client = AsyncIOMotorClient(uri)
+        self._db = self._client[db_name]
+        self._collection = self._db["videos"]
 
-    async def get_video(self, url: str) -> Optional[dict]:
+    async def get_video(self, url: Optional[str] = None, _id: Optional[str] = None) -> Optional[dict]:
         """
         Retrieve a video document by URL, returning only the latest summary.
         """
+        if url is None and _id is None:
+            raise
+        condition = {}
+        if url:
+            condition = {"$match": {"url": url}}
+        elif _id:
+            condition = {"$match": {"_id": _id}}
+
         pipeline = [
-            {"$match": {"url": url}},
+            condition,
             {"$project": {
+                "_id": 1,
                 "url": 1,
                 "transcription": 1,
                 "created_at": 1,
@@ -31,7 +42,7 @@ class MongoService:
                 }
             }}
         ]
-        cursor = self.collection.aggregate(pipeline)
+        cursor = self._collection.aggregate(pipeline)
         result = await cursor.to_list(length=1)
         return dict(result) or None
 
@@ -53,11 +64,11 @@ class MongoService:
         }
 
         if existing:
-            await self.collection.update_one(
+            await self._collection.update_one(
                 {"url": url},
                 {"$set": {"summaries.$[].latest": False}}
             )
-            await self.collection.update_one(
+            await self._collection.update_one(
                 {"url": url},
                 {"$push": {"summaries": summary_entry}}
             )
@@ -69,5 +80,5 @@ class MongoService:
                 "summaries": [summary_entry],
                 "created_at": datetime.now(timezone.utc)
             }
-            result = await self.collection.insert_one(doc)
+            result = await self._collection.insert_one(doc)
             return str(result.inserted_id)

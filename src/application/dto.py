@@ -4,7 +4,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 class UrlDTO(BaseModel):
-    id: Optional[str]
+    _id: Optional[str]
     url: str = Field(..., pattern=r"^https:\/\/(www\.)?(youtube\.com|youtu\.be)\/")
 
 class TranscriptionDTO(UrlDTO):

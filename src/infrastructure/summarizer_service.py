@@ -1,3 +1,5 @@
+# src/infrastructure/summarizer_service.py
+
 from transformers import pipeline
 
 class SummarizerService:

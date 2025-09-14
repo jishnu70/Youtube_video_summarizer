@@ -8,18 +8,18 @@ from src.application.dto import SummaryCompletedDTO, SummaryQueuedDTO
 class DTOMapper:
     @staticmethod
     def to_domain_url(url:str, id:Optional[str] = None)->VideoURL:
-        return VideoURL(id=id, url=url)
+        return VideoURL(_id=id, url=url)
 
     @staticmethod
     def to_summary_DTO(summary: VideoResponse)->SummaryCompletedDTO:
-        if summary.id is None:
+        if summary._id is None:
             raise UniqueIDError("Transcription is missing a primary key")
-        if summary.summary is None:
+        if summary.summaries.summary is None:
             raise IncompleteError("Failed to generate summary")
         return SummaryCompletedDTO(
-            id=summary.id,
+            id=summary._id,
             url=summary.url,
-            summary=summary.summary
+            summary=summary.summaries.summary
         )
 
     @staticmethod
