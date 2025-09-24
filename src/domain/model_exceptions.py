@@ -11,3 +11,7 @@ class IncompleteError(Exception):
 class VideoNotAvailableError(Exception):
     """If the URL or video does not exists"""
     pass
+
+class InsufficientData(Exception):
+    """Insufficient data is given"""
+    pass

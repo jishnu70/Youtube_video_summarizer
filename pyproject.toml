@@ -12,6 +12,7 @@ dependencies = [
     "librosa>=0.11.0",
     "motor>=3.7.1",
     "openai-whisper>=20250625",
+    "pydantic-settings>=2.10.1",
     "pydub>=0.25.1",
     "redis>=6.4.0",
     "sentencepiece>=0.2.1",

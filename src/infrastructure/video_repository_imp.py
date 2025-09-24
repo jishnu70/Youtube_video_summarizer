@@ -1,6 +1,7 @@
 # src/infrastructure/video_repository_imp.py
 
 from src.domain.entities import SummaryResponse, VideoResponse, VideoURL
+from src.domain.model_exceptions import InsufficientData
 from src.domain.video_repository import VideoRepository
 from src.infrastructure.correction_service import Correction_Service
 from src.infrastructure.database.mongo_service import MongoService
@@ -64,40 +65,50 @@ class VideoRepositoryImp(VideoRepository):
         summary = self._s_service.summarize(c_transcription)
         return summary
 
-    async def _transform_the_video(self, url: str) -> dict:
+    async def _transform_the_video(self, url: str) -> VideoResponse:
         captions = await self._get_captions(url)
         if captions is None or captions == "":
             transcription = await self._get_transcription(url)
             captions = self._correct_grammer(transcription)
         summary = self._generate_summary(captions)
 
-        video_dict = {
-            "url": url,
-            "transcription": captions,
-            "summary": summary
-        }
-        return video_dict
+        video_response = VideoResponse(
+            _id=None,  # not yet stored in DB
+            url=url,
+            transcription=captions,
+            summaries=SummaryResponse(
+                summary=summary,
+                model_name="summarizer-service",   # you can replace with actual model name if available
+                latest=True,
+                created_at=None   # can be set to datetime.utcnow() if you want
+            ),
+            created_at=None  # DB will populate this
+        )
+        return video_response
 
     async def get(self, video_url: Optional[VideoURL] = None, _id: Optional[str] = None)->VideoResponse:
         if video_url is None and _id is None:
-            raise
-        result = {}
+            raise InsufficientData("Either video_url or _id must be provided")
+
         if video_url:
             result = await self._db.get_video(url=video_url.url)
             if result is None:
                 result = await self._transform_the_video(url=video_url.url)
-                db_id = await self.save(result)
-                return await self.get(_id=db_id)
+                saved_data = await self.save(result)
+                return saved_data
         elif _id:
             result = await self._db.get_video(_id=_id)
-        if result is None or len(result.items()) == 0:
-            raise
+            if result is None or len(result.items()) == 0:
+                raise ValueError(f"Video with id {_id} not found")
         return self._to_domain(result)
 
-    async def save(self, summary: dict) -> str:
+    async def save(self, summary: VideoResponse) -> VideoResponse:
         result = await self._db.save(
-            summary["url"],
-            transcription=summary["transcription"],
-            summary = summary["summary"],
+            summary.url,
+            transcription=summary.transcription,
+            summary = summary.summaries.summary,
+            model_name=summary.summaries.model_name
         )
-        return result
+        print(f"Result = {result}")
+        summary._id=result
+        return summary

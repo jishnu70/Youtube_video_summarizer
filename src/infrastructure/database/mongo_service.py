@@ -5,13 +5,18 @@ from datetime import datetime, timezone
 from typing import Optional
 
 class MongoService:
-    def __init__(self, uri: str, db_name: str = "yt_summarizer") -> None:
+    async def __init__(self, uri: str, db_name: str = "yt_summarizer") -> None:
         """
         Connect to MongoDB using Motor.
         uri: MongoDB connection string (local or Atlas cloud).
         db_name: database name (default = yt_summarizer).
         """
         self._client = AsyncIOMotorClient(uri)
+        try:
+            await self._client.admin.command('ping')
+            print("Pinged your deployment. You successfully connected to MongoDB!")
+        except Exception as e:
+            print(e)
         self._db = self._client[db_name]
         self._collection = self._db["videos"]
 
