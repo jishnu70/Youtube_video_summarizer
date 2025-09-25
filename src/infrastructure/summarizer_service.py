@@ -2,12 +2,16 @@
 
 from transformers import pipeline
 
+# model_name: str = "facebook/bart-large-cnn"
+model_name: str = "google/flan-t5-large"
+
 class SummarizerService:
-    def __init__(self, model_name: str = "facebook/bart-large-cnn") -> None:
+    def __init__(self, model_name: str = model_name) -> None:
         """
         Initialize the summarizer with a pretrained model.
         """
-        self._summarizer = pipeline("summarization", model_name)
+        # self._summarizer = pipeline("summarization", model_name)
+        self._summarizer = pipeline("text2text-generation", model_name)
 
     def summarize(self, text: str, max_length: int=500, min_length: int=200):
         """
@@ -18,4 +22,5 @@ class SummarizerService:
             return ""
 
         result = self._summarizer(text, min_length=min_length, max_length=max_length, do_sample=False)
-        return result[0]["summary_text"]
+        # return result[0]["summary_text"]
+        return result[0]["generated_text"]

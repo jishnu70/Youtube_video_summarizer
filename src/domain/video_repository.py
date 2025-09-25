@@ -1,7 +1,7 @@
 # src/domain/video_repository.py
 
 from abc import ABC, abstractmethod
-from domain.entities import VideoResponse, VideoURL
+from src.domain.entities import VideoResponse, VideoURL
 from typing import Optional
 
 class VideoRepository(ABC):

@@ -1,24 +1,27 @@
-# src/infrastructure/database/mongo_service.py
+# src/infrastructure/mongo_service.py
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timezone
 from typing import Optional
 
 class MongoService:
-    async def __init__(self, uri: str, db_name: str = "yt_summarizer") -> None:
+    def __init__(self, uri: str, db_name: str = "yt_summarizer") -> None:
         """
         Connect to MongoDB using Motor.
         uri: MongoDB connection string (local or Atlas cloud).
         db_name: database name (default = yt_summarizer).
         """
         self._client = AsyncIOMotorClient(uri)
+        self._db = self._client[db_name]
+        self._collection = self._db["videos"]
+
+    async def connect(self):
+        """Test the connection (ping)."""
         try:
             await self._client.admin.command('ping')
             print("Pinged your deployment. You successfully connected to MongoDB!")
         except Exception as e:
-            print(e)
-        self._db = self._client[db_name]
-        self._collection = self._db["videos"]
+            print(f"MongoDB connection error: {e}")
 
     async def get_video(self, url: Optional[str] = None, _id: Optional[str] = None) -> Optional[dict]:
         """
@@ -42,14 +45,17 @@ class MongoService:
                 "summaries": {
                     "$filter": {
                         "input": "$summaries",
-                        "cond": {"$eq": ["$$summaries.latest", True]}
+                        "as": "summary",          # <-- define variable
+                        "cond": {"$eq": ["$$summary.latest", True]}
                     }
                 }
             }}
         ]
         cursor = self._collection.aggregate(pipeline)
-        result = await cursor.to_list(length=1)
-        return dict(result) or None
+        result_list = await cursor.to_list(length=1)
+        if not result_list:
+            return None
+        return result_list[0]
 
     async def save(self,
         url: str,

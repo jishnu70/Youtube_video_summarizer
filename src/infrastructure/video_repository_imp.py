@@ -21,6 +21,9 @@ class VideoRepositoryImp(VideoRepository):
         self._c_service = Correction_Service()
         self._s_service = SummarizerService()
 
+    async def connect_db(self):
+        return await self._db.connect()
+
     def __init_subclass__(cls) -> None:
         return super().__init_subclass__()
 
@@ -33,12 +36,12 @@ class VideoRepositoryImp(VideoRepository):
         )
 
     def _to_domain(self, result: dict) -> VideoResponse:
-        result = result[0]
+        # result = result[0]
         response = VideoResponse(
             _id = result["_id"],
             url = result["url"],
-            transcription= result["transcript"],
-            summaries = self._to_summary(result["summaries"]),
+            transcription= result["transcription"],
+            summaries = self._to_summary(result["summaries"][0]),
             created_at= result["created_at"]
         )
         return response
@@ -62,7 +65,22 @@ class VideoRepositoryImp(VideoRepository):
 
     def _generate_summary(self, c_transcription: str) -> str:
         logger.debug("\n--- Generate Summary ---\n")
-        summary = self._s_service.summarize(c_transcription)
+        prompt = f"""
+            Summarize the following transcription exactly as it is.
+
+            Rules:
+            1. Only use sentences or phrases that appear in the transcription.
+            2. Do NOT include any social media mentions, emails, calls-to-action, or invented content.
+            3. Do NOT mention YouTube, Twitter, Facebook, blogs, or any external platform.
+            4. Keep the summary factual, concise, and limited to the content.
+            5. Ignore any phrases like 'hit subscribe', 'share this video', or 'contact me'.
+
+            Output only the summary. No extra commentary.
+
+            Transcription:
+            {c_transcription}
+        """
+        summary = self._s_service.summarize(prompt)
         return summary
 
     async def _transform_the_video(self, url: str) -> VideoResponse:
