@@ -61,7 +61,7 @@ class MongoService:
         url: str,
         transcription: str,
         summary: str,
-        model_name: str="facebook/bart-large-cnn"
+        model_name: str="google/flan-t5-large"
     ) -> str:
         """
         Save a new video or add a summary to an existing one.
