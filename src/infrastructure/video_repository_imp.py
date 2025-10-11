@@ -39,6 +39,7 @@ class VideoRepositoryImp(VideoRepository):
         return response
 
     async def get(self, video_url: Optional[VideoURL] = None, _id: Optional[str] = None)->Optional[VideoResponse]:
+        global result
         if video_url is None and _id is None:
             raise InsufficientData("Either video_url or _id must be provided")
 

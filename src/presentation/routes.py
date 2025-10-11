@@ -7,7 +7,7 @@ from src.presentation.container import get_use_case
 
 app = FastAPI(
     title="Youtube Video Summarizer",
-    version="1.0.0",
+    version="1.1.0",
     description="API using FastAPI to get a summary of a youtube video",
 )
 

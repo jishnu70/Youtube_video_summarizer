@@ -1,7 +1,5 @@
 # src/application/use_case.py
 
-from src.application.dto import SummaryCompletedDTO, SummaryQueuedDTO, UrlDTO
-# from src.application.mappers import DTOMapper
 from src.application.task_queue import TranscriptionTaskQueue
 from src.domain.entities import VideoResponse, VideoURL
 from src.domain.video_repository import VideoRepository

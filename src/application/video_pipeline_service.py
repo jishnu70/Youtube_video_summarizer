@@ -2,7 +2,6 @@
 
 from typing import Optional
 import logging
-
 from src.domain.entities import SummaryResponse, VideoResponse
 from src.infrastructure.correction_service import Correction_Service
 from src.infrastructure.stt_service import STTService
@@ -71,14 +70,14 @@ class VideoPipelineService:
         summary = self._generate_summary(captions)
 
         video_response = VideoResponse(
-            _id=None,  # not yet stored in DB
+            _id=None,
             url=url,
             transcription=captions,
             summaries=SummaryResponse(
                 summary=summary,
-                model_name="summarizer-service",   # you can replace with actual model name if available
+                model_name="google/flan-t5-large",
                 latest=True,
-                created_at=None   # can be set to datetime.utcnow() if you want
+                created_at=None
             ),
             created_at=None  # DB will populate this
         )

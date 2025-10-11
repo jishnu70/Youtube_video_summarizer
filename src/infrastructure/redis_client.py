@@ -27,7 +27,7 @@ class RedisClient:
 
     async def set_cache_summary(self, summary: VideoResponse, exp: int = 3600):
         try:
-            self._redis.setex(f"summary {summary.url}", exp, summary.model_dump_json())
+            await self._redis.setex(f"summary {summary.url}", exp, summary.model_dump_json())
             logger.info(f"Cached summary for {summary.url}")
         except redis.RedisError as re:
             logger.error(f"Redis error while saving cache for {summary.url}: {re}")
