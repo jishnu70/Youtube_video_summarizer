@@ -15,3 +15,15 @@ class VideoNotAvailableError(Exception):
 class InsufficientData(Exception):
     """Insufficient data is given"""
     pass
+
+class SummaryFailException(Exception):
+    """Summary generation for the video fails"""
+    pass
+
+class FailedToFetch(Exception):
+    """Failed to fetch the data in db or cache"""
+    pass
+
+class FailedToSave(Exception):
+    """Failed to save the data in db or cache"""
+    pass

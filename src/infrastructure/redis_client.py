@@ -1,7 +1,7 @@
 # src/infrastructure/redis_client.py
 
 from typing import Optional
-from redis import Redis
+from redis.asyncio import Redis
 from src.domain.entities import VideoResponse
 import redis
 from src.infrastructure.system_config import config
@@ -33,9 +33,5 @@ class RedisClient:
             logger.error(f"Redis error while saving cache for {summary.url}: {re}")
             return None
 
-_redis_client = None
 def get_redis_client():
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = RedisClient(config.REDIS_URL)
-    return _redis_client
+    return RedisClient(config.REDIS_URL)

@@ -3,6 +3,9 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timezone
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class MongoService:
     def __init__(self, uri: str, db_name: str = "yt_summarizer") -> None:
@@ -14,6 +17,7 @@ class MongoService:
         self._client = AsyncIOMotorClient(uri)
         self._db = self._client[db_name]
         self._collection = self._db["videos"]
+        self._task = self._db["tasks"]
 
     async def connect(self):
         """Test the connection (ping)."""
@@ -22,6 +26,35 @@ class MongoService:
             print("Pinged your deployment. You successfully connected to MongoDB!")
         except Exception as e:
             print(f"MongoDB connection error: {e}")
+
+    async def insert_task_status(self, requestID: str, video_url: str):
+        await self._task.insert_one({
+            "task_id": requestID,
+            "video_url": video_url,
+            "status": "QUEUED",
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        })
+
+    async def update_status(self, requestID: str, status: str):
+        await self._task.update_one(
+            {"task_id": requestID},
+            {
+                "$set": {
+                    "status": status,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+            upsert=True,
+        )
+
+    async def get_status(self, requestID: Optional[str], video_url: Optional[dict]) -> Optional[dict]:
+        if requestID is None and video_url is None:
+            logger.error("Get Status ERROR: missing both requestID and video_url")
+            raise
+        return await self._task.find_one({
+            "$or": [{"task_id": requestID}, {"video_url": video_url}]
+        })
 
     async def get_video(self, url: Optional[str] = None, _id: Optional[str] = None) -> Optional[dict]:
         """

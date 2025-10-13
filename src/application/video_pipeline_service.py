@@ -3,6 +3,7 @@
 from typing import Optional
 import logging
 from src.domain.entities import SummaryResponse, VideoResponse
+from src.domain.model_exceptions import SummaryFailException, VideoNotAvailableError
 from src.infrastructure.correction_service import Correction_Service
 from src.infrastructure.stt_service import STTService
 from src.infrastructure.summarizer_service import SummarizerService
@@ -63,11 +64,15 @@ class VideoPipelineService:
         captions = self._get_captions(url)
         if captions is None or captions == "":
             transcription = await self._get_transcription(url)
+            if not transcription:
+                raise VideoNotAvailableError(f"Cannot get captions or transcription for {url}")
             captions = self._correct_grammer(transcription)
         if not captions:
             raise ValueError(f"Could not get captions or transcription for {url}")
 
         summary = self._generate_summary(captions)
+        if not summary:
+            raise SummaryFailException(f"Failed to generate summary for {url}")
 
         video_response = VideoResponse(
             _id=None,

@@ -1,7 +1,7 @@
 # src/infrastructure/video_repository_imp.py
 
 from src.domain.entities import SummaryResponse, VideoResponse, VideoURL
-from src.domain.model_exceptions import InsufficientData
+from src.domain.model_exceptions import FailedToFetch, FailedToSave, InsufficientData, VideoNotAvailableError
 from src.domain.video_repository import VideoRepository
 from src.infrastructure.mongo_service import MongoService
 from typing import Optional
@@ -39,27 +39,35 @@ class VideoRepositoryImp(VideoRepository):
         return response
 
     async def get(self, video_url: Optional[VideoURL] = None, _id: Optional[str] = None)->Optional[VideoResponse]:
-        global result
-        if video_url is None and _id is None:
-            raise InsufficientData("Either video_url or _id must be provided")
+        try:
+            if video_url:
+                result = await self._db.get_video(url=video_url.url)
+                if result is None:
+                    logger.warning(f"Video {video_url.url} not found")
+                    return None
+            elif _id:
+                result = await self._db.get_video(_id=_id)
+                if result is None:
+                    raise VideoNotAvailableError(f"Video with id {_id} not found")
+            else:
+                raise InsufficientData("Either video_url or _id must be provided")
 
-        if video_url:
-            result = await self._db.get_video(url=video_url.url)
-            if result is None:
-                return None
-        elif _id:
-            result = await self._db.get_video(_id=_id)
-            if result is None:
-                raise ValueError(f"Video with id {_id} not found")
-        return self._to_domain(result)
+            return self._to_domain(result)
+        except Exception as e:
+            logger.error(f"Repository get failed: {str(e)}")
+            raise FailedToFetch("Failed to fetch the video")
 
     async def save(self, summary: VideoResponse) -> VideoResponse:
-        result = await self._db.save(
-            summary.url,
-            transcription=summary.transcription,
-            summary = summary.summaries.summary,
-            model_name=summary.summaries.model_name
-        )
-        logger.info(f"Saved video summary for {summary.url} with id {result}")
-        summary._id=result
-        return summary
+        try:
+            result = await self._db.save(
+                summary.url,
+                transcription=summary.transcription,
+                summary = summary.summaries.summary,
+                model_name=summary.summaries.model_name
+            )
+            logger.info(f"Saved video summary for {summary.url} with id {result}")
+            summary._id=result
+            return summary
+        except Exception as e:
+            logger.error(f"Repository save failed: {str(e)}")
+            raise FailedToSave("Failed to save the video and summary")
