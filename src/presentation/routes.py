@@ -5,16 +5,39 @@ from src.application.use_case import UseCase
 from src.domain.entities import VideoResponse, VideoURL
 from fastapi import FastAPI, Depends, Response, status
 from typing import Annotated
+from contextlib import asynccontextmanager
 from src.domain.model_exceptions import FailedToFetch, FailedToSave, InsufficientData, TaskIDError, VideoNotAvailableError
+from src.infrastructure.mongo_service import MongoService
+from src.infrastructure.redis_client import get_redis_client
+from src.infrastructure.video_repository_imp import VideoRepositoryImp
 from src.presentation.container import get_use_case
 from src.application.logging_config import setup_logging
+from src.infrastructure.system_config import config
+import logging
 
 setup_logging()
+
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.warning("lifespan started")
+    video_repo_impl = VideoRepositoryImp(config.DATABASE_URL)
+    await video_repo_impl.connect_db()
+    r_client = get_redis_client()
+    m_client = MongoService(config.DATABASE_URL)
+    await m_client.run_init()
+    repo_use_case = UseCase(video_repo_impl, r_client, m_client)
+    app.state.use_case = repo_use_case
+    logger.warning("lifespan set use_case")
+    yield
+    m_client.disconnect()
 
 app = FastAPI(
     title="Youtube Video Summarizer",
     version="1.1.2",
     description="API using FastAPI to get a summary of a youtube video",
+    lifespan=lifespan
 )
 
 @app.exception_handler(VideoNotAvailableError)
@@ -45,7 +68,7 @@ async def fail_to_save_handler(request, exc):
 def root():
     return Response("Backend is online")
 
-@app.post("/", response_model=VideoResponse|str)
+@app.post("/", response_model=VideoResponse|str|dict)
 async def get_summary(video: VideoURL, use_case:Annotated[UseCase, Depends(get_use_case)]):
     return await use_case.send(video=video, task_id=None)
 

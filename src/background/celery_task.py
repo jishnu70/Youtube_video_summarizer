@@ -2,8 +2,8 @@
 
 import asyncio
 from billiard.exceptions import SoftTimeLimitExceeded
-from celery import shared_task
 from src.application.video_pipeline_service import VideoPipelineService
+from src.domain.model_exceptions import SoftTimeLimitExceededError
 from src.infrastructure.mongo_service import MongoService
 from src.infrastructure.redis_client import get_redis_client
 from src.infrastructure.system_config import config
@@ -12,8 +12,8 @@ from src.infrastructure.correction_service import Correction_Service
 from src.infrastructure.stt_service import STTService
 from src.infrastructure.summarizer_service import SummarizerService
 from src.infrastructure.yt_service import YoutubeService
-import logging
 from src.background.celery_app import celery_app
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,8 @@ def queue_yt_video(self, url: str):
         correction_service = Correction_Service()
         summarizer_service = SummarizerService()
         video_repo = VideoRepositoryImp(config.DATABASE_URL)
-        mongo = MongoService(uri=config.DATABASE_URL, db_name="yt_summarizer")
-
+        mongo = MongoService(uri=config.DATABASE_URL)
+        await mongo.run_init()
 
         await mongo.update_status(self.request.id, "STARTED")
         try:
@@ -58,11 +58,13 @@ def queue_yt_video(self, url: str):
         except SoftTimeLimitExceeded:
             logger.exception(f"Task {self.request.id} timed out for URL {url}")
             await mongo.update_status(self.request.id, "TIMEOUT")
-            raise
+            raise SoftTimeLimitExceededError(f"Task {self.request.id} timed out for URL {url}")
         except Exception as e:
-            logger.exception(f"Task {self.request.id} timed out for URL {url} for: {e}")
+            logger.exception(f"Task {self.request.id} failed out for URL {url} for: {e}")
             await mongo.update_status(self.request.id, "FAILED")
             raise
+        finally:
+            await redis_client.delete_queued_task(url)
 
     try:
         return asyncio.run(run_pipeline())

@@ -31,3 +31,7 @@ class FailedToFetch(Exception):
 class FailedToSave(Exception):
     """Failed to save the data in db or cache"""
     pass
+
+class SoftTimeLimitExceededError(Exception):
+    """Soft Time Limit Exceeded"""
+    pass

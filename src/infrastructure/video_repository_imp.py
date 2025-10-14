@@ -16,9 +16,6 @@ class VideoRepositoryImp(VideoRepository):
     async def connect_db(self):
         return await self._db.connect()
 
-    def __init_subclass__(cls) -> None:
-        return super().__init_subclass__()
-
     def _to_summary(self, summaries: dict) -> SummaryResponse:
         return SummaryResponse(
             summary= summaries["summary"],

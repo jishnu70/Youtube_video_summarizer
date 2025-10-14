@@ -1,11 +1,14 @@
 # src/infrastructure/mongo_service.py
 
+import asyncio
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timezone
 from typing import Optional
 import logging
 
 from src.domain.entities import VideoResponse
+from src.domain.model_exceptions import InsufficientData
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +24,25 @@ class MongoService:
         self._collection = self._db["videos"]
         self._task = self._db["tasks"]
 
+    async def run_init(self):
+        """Initialize indexes"""
+        await self._collection.create_index("url", unique=True)
+        await self._task.create_index("video_url", unique=True)
+        logger.info("Mongo indexes ensured")
+
     async def connect(self):
         """Test the connection (ping)."""
         try:
             await self._client.admin.command('ping')
             print("Pinged your deployment. You successfully connected to MongoDB!")
         except Exception as e:
-            print(f"MongoDB connection error: {e}")
+            logger.exception(f"MongoDB connection error: {e}")
+
+    def disconnect(self):
+        try:
+            self._client.close()
+        except Exception as e:
+            logger.exception(f"MongoDB disconnect error: {e}")
 
     async def insert_task_status(self, requestID: str, video_url: str):
         await self._task.insert_one({
@@ -50,13 +65,16 @@ class MongoService:
             upsert=True,
         )
 
-    async def get_status(self, requestID: Optional[str], video_url: Optional[dict]) -> Optional[dict]:
-        if requestID is None and video_url is None:
+    async def get_status(self, requestID: Optional[str], video_url: Optional[str]) -> Optional[dict]:
+        query = {}
+        if requestID:
+            query = {"task_id": requestID}
+        elif video_url:
+            query = {"video_url": video_url}
+        else:
             logger.error("Get Status ERROR: missing both requestID and video_url")
-            raise
-        return await self._task.find_one({
-            "$or": [{"task_id": requestID}, {"video_url": video_url}]
-        })
+            raise InsufficientData("Insufficient Data provided")
+        return await self._task.find_one(query)
 
     async def get_video(self, url: Optional[str] = None, _id: Optional[str] = None) -> Optional[dict]:
         """
@@ -68,7 +86,7 @@ class MongoService:
         if url:
             condition = {"$match": {"url": url}}
         elif _id:
-            condition = {"$match": {"_id": _id}}
+            condition = {"$match": {"_id": ObjectId(_id)}}
 
         pipeline = [
             condition,
@@ -118,7 +136,8 @@ class MongoService:
                 {"url": url},
                 {"$push": {"summaries": summary_entry}}
             )
-            return await self.get_video(_id=str(existing["_id"]))
+            if result_obj := await self.get_video(_id=str(existing["_id"])):
+                return result_obj
         else:
             doc = {
                 "url": url,
@@ -127,4 +146,12 @@ class MongoService:
                 "created_at": datetime.now(timezone.utc)
             }
             result = await self._collection.insert_one(doc)
-            return await self.get_video(_id=str(result.inserted_id))
+            if result_obj := await self.get_video(_id=str(result.inserted_id)):
+                return result_obj
+            return {
+                "_id": str(result.inserted_id),
+                "url": url,
+                "transcription": transcription,
+                "summaries": [summary_entry],
+                "created_at": datetime.now(timezone.utc)
+            }

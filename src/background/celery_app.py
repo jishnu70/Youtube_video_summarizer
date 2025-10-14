@@ -3,10 +3,6 @@
 from celery import Celery
 from src.infrastructure.system_config import config
 
-
-print("CELERY BROKER URL:", config.CELERY_BROKER_URL)  # debug
-print("CELERY BACKEND URL:", config.CELERY_BACKEND_URL)  # debug
-
 celery_app = Celery(
     "yt-service",
     broker=config.CELERY_BROKER_URL,
