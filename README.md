@@ -42,8 +42,8 @@ It uses **FastAPI**, **Celery**, **Redis**, and **MongoDB** to handle ML-heavy w
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/your-username/youtube-video-summarizer.git
-cd youtube-video-summarizer
+git clone https://github.com/jishnu70/Youtube_video_summarizer.git
+cd Youtube_video_summarizer
 ```
 
 ### 2. Create Virtual Environment
