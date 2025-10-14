@@ -66,7 +66,9 @@ class VideoRepositoryImp(VideoRepository):
                 model_name=summary.summaries.model_name
             )
             logger.info(f"Saved video summary for {summary.url} with id {result}")
-            summary._id=result
+            summary._id=result["_id"]
+            summary.created_at = result["created_at"]
+            summary.summaries.created_at = result.get("summaries")[0]["created_at"]
             return summary
         except Exception as e:
             logger.error(f"Repository save failed: {str(e)}")

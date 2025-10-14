@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from typing import Optional
 import logging
 
+from src.domain.entities import VideoResponse
+
 logger = logging.getLogger(__name__)
 
 class MongoService:
@@ -95,7 +97,7 @@ class MongoService:
         transcription: str,
         summary: str,
         model_name: str="google/flan-t5-large"
-    ) -> str:
+    ) -> dict:
         """
         Save a new video or add a summary to an existing one.
         """
@@ -116,7 +118,7 @@ class MongoService:
                 {"url": url},
                 {"$push": {"summaries": summary_entry}}
             )
-            return str(existing["_id"])
+            return await self.get_video(_id=str(existing["_id"]))
         else:
             doc = {
                 "url": url,
@@ -125,4 +127,4 @@ class MongoService:
                 "created_at": datetime.now(timezone.utc)
             }
             result = await self._collection.insert_one(doc)
-            return str(result.inserted_id)
+            return await self.get_video(_id=str(result.inserted_id))

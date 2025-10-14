@@ -13,10 +13,11 @@ from src.infrastructure.stt_service import STTService
 from src.infrastructure.summarizer_service import SummarizerService
 from src.infrastructure.yt_service import YoutubeService
 import logging
+from src.background.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-@shared_task(bind=True, name="summarize_video_task", max_retries=3, default_retry_delay=60, ignore_result=False)
+@celery_app.task(bind=True, name="summarize_video_task", max_retries=3, default_retry_delay=60, ignore_result=False)
 def queue_yt_video(self, url: str):
     """
     Celery task to summarize a YouTube video.
@@ -52,7 +53,7 @@ def queue_yt_video(self, url: str):
             await redis_client.set_cache_summary(saved_response)
             await mongo.update_status(self.request.id, "SUCCESS")
 
-            return saved_response
+            return self.request.id
 
         except SoftTimeLimitExceeded:
             logger.exception(f"Task {self.request.id} timed out for URL {url}")

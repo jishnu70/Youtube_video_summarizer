@@ -11,6 +11,7 @@ celery_app = Celery(
     "yt-service",
     broker=config.CELERY_BROKER_URL,
     backend=config.CELERY_BACKEND_URL,
+    include=["src.background.celery_task"]
 )
 
 celery_app.conf.update(

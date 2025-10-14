@@ -5,19 +5,25 @@ from src.application.use_case import UseCase
 from src.domain.entities import VideoResponse, VideoURL
 from fastapi import FastAPI, Depends, Response, status
 from typing import Annotated
-
-from src.domain.model_exceptions import FailedToFetch, FailedToSave, InsufficientData, VideoNotAvailableError
+from src.domain.model_exceptions import FailedToFetch, FailedToSave, InsufficientData, TaskIDError, VideoNotAvailableError
 from src.presentation.container import get_use_case
+from src.application.logging_config import setup_logging
+
+setup_logging()
 
 app = FastAPI(
     title="Youtube Video Summarizer",
-    version="1.2.0",
+    version="1.1.2",
     description="API using FastAPI to get a summary of a youtube video",
 )
 
 @app.exception_handler(VideoNotAvailableError)
 async def video_not_found_handler(request, exc):
     return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+@app.exception_handler(TaskIDError)
+async def incorrect_task_id_handler(request, exc):
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail":str(exc)})
 
 @app.exception_handler(InsufficientData)
 async def insufficient_data_handler(request, exc):
@@ -41,4 +47,8 @@ def root():
 
 @app.post("/", response_model=VideoResponse|str)
 async def get_summary(video: VideoURL, use_case:Annotated[UseCase, Depends(get_use_case)]):
-    return await use_case.send(video=video)
+    return await use_case.send(video=video, task_id=None)
+
+@app.post("/status")
+async def get_status(task_id: str, use_case:Annotated[UseCase, Depends(get_use_case)]):
+    return await use_case.send(task_id=task_id, video=None)

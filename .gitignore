@@ -11,3 +11,4 @@ wheels/
 .env
 req.txt
 temp.txt
+*.rdb

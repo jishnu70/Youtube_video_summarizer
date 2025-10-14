@@ -4,6 +4,10 @@ class UniqueIDError(Exception):
     """Error in the primary key"""
     pass
 
+class TaskIDError(Exception):
+    """Provided incorrect task ID"""
+    pass
+
 class IncompleteError(Exception):
     """If the summary was not generated"""
     pass
