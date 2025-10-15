@@ -45,6 +45,9 @@ class MongoService:
             logger.exception(f"MongoDB disconnect error: {e}")
 
     async def insert_task_status(self, requestID: str, video_url: str):
+        if not requestID or not video_url:
+            logger.error("Cannot insert task status: missing task_id or video_url")
+            raise InsufficientData("Missing the required task_id or video_url")
         await self._task.insert_one({
             "task_id": requestID,
             "video_url": video_url,

@@ -10,7 +10,7 @@ from src.domain.model_exceptions import FailedToFetch, FailedToSave, Insufficien
 from src.infrastructure.mongo_service import MongoService
 from src.infrastructure.redis_client import get_redis_client
 from src.infrastructure.video_repository_imp import VideoRepositoryImp
-from src.presentation.container import get_use_case
+from src.presentation.container import get_use_case, requeue_stuck_tasks
 from src.application.logging_config import setup_logging
 from src.infrastructure.system_config import config
 import logging
@@ -27,6 +27,7 @@ async def lifespan(app: FastAPI):
     r_client = get_redis_client()
     m_client = MongoService(config.DATABASE_URL)
     await m_client.run_init()
+    await requeue_stuck_tasks(m_client)
     repo_use_case = UseCase(video_repo_impl, r_client, m_client)
     app.state.use_case = repo_use_case
     logger.warning("lifespan set use_case")

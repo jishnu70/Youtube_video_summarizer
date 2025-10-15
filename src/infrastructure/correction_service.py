@@ -1,6 +1,10 @@
 # src/infrastructure/correction_service.py
 
+import os
 import language_tool_python as ltp
+import logging
+
+logger = logging.getLogger(__name__)
 
 ignore_list=["Java", "Python", "TensorFlow", "Hadoop", "Spring", "Django", "JVM", "NASA"]
 replace_dict={
@@ -21,7 +25,19 @@ class Correction_Service:
         Initialize the correction tool.
         lang: language code (default is English, US).
         """
-        self.tool = ltp.LanguageTool(lang)
+        logger.info("Initializing Correction_Service with LanguageTool")
+        jar_dir = os.getenv("LTP_JAR_DIR_PATH", "/opt/languagetool")
+        logger.info(f"Using LanguageTool directory: {jar_dir}")
+
+        # Explicitly set the LanguageTool home directory
+        os.environ["LTP_HOME"] = jar_dir
+        try:
+            self.tool = ltp.LanguageTool(lang)
+            logger.info("Correction_Service initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize LanguageTool: {str(e)}")
+            raise RuntimeError(f"LanguageTool initialization failed: {str(e)}")
+
         self.ignore_list = ignore_list or []
         self.replace_dict = replace_dict or {}
 
