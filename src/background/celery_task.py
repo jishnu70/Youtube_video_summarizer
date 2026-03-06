@@ -1,23 +1,32 @@
 # src/background/celery_task.py
 
 import asyncio
+import logging
+
 from billiard.exceptions import SoftTimeLimitExceeded
+
 from src.application.video_pipeline_service import VideoPipelineService
+from src.background.celery_app import celery_app
 from src.domain.model_exceptions import SoftTimeLimitExceededError
+from src.infrastructure.correction_service import get_correction_service
 from src.infrastructure.mongo_service import MongoService
 from src.infrastructure.redis_client import get_redis_client
-from src.infrastructure.system_config import config
-from src.infrastructure.video_repository_imp import VideoRepositoryImp
-from src.infrastructure.correction_service import Correction_Service
 from src.infrastructure.stt_service import STTService
 from src.infrastructure.summarizer_service import SummarizerService
+from src.infrastructure.system_config import config
+from src.infrastructure.video_repository_imp import VideoRepositoryImp
 from src.infrastructure.yt_service import YoutubeService
-from src.background.celery_app import celery_app
-import logging
 
 logger = logging.getLogger(__name__)
 
-@celery_app.task(bind=True, name="summarize_video_task", max_retries=3, default_retry_delay=60, ignore_result=False)
+
+@celery_app.task(
+    bind=True,
+    name="summarize_video_task",
+    max_retries=3,
+    default_retry_delay=60,
+    ignore_result=False,
+)
 def queue_yt_video(self, url: str):
     """
     Celery task to summarize a YouTube video.
@@ -26,12 +35,13 @@ def queue_yt_video(self, url: str):
 
     logger.info("Entered the Celery queue")
     redis_client = get_redis_client()
+
     async def run_pipeline():
         logger.info("Running the asynchronous run_pipeline method")
         # Initialize services
         yt_service = YoutubeService()
         stt_service = STTService()
-        correction_service = Correction_Service()
+        correction_service = get_correction_service()
         summarizer_service = SummarizerService()
         video_repo = VideoRepositoryImp(config.DATABASE_URL)
         mongo = MongoService(uri=config.DATABASE_URL)
@@ -58,9 +68,13 @@ def queue_yt_video(self, url: str):
         except SoftTimeLimitExceeded:
             logger.exception(f"Task {self.request.id} timed out for URL {url}")
             await mongo.update_status(self.request.id, "TIMEOUT")
-            raise SoftTimeLimitExceededError(f"Task {self.request.id} timed out for URL {url}")
+            raise SoftTimeLimitExceededError(
+                f"Task {self.request.id} timed out for URL {url}"
+            )
         except Exception as e:
-            logger.exception(f"Task {self.request.id} failed out for URL {url} for: {e}")
+            logger.exception(
+                f"Task {self.request.id} failed out for URL {url} for: {e}"
+            )
             await mongo.update_status(self.request.id, "FAILED")
             raise
         finally:
