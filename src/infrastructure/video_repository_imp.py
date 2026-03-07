@@ -1,13 +1,20 @@
 # src/infrastructure/video_repository_imp.py
 
+import logging
+from typing import Optional
+
 from src.domain.entities import SummaryResponse, VideoResponse, VideoURL
-from src.domain.model_exceptions import FailedToFetch, FailedToSave, InsufficientData, VideoNotAvailableError
+from src.domain.model_exceptions import (
+    FailedToFetch,
+    FailedToSave,
+    InsufficientData,
+    VideoNotAvailableError,
+)
 from src.domain.video_repository import VideoRepository
 from src.infrastructure.mongo_service import MongoService
-from typing import Optional
-import logging
 
 logger = logging.getLogger(__name__)
+
 
 class VideoRepositoryImp(VideoRepository):
     def __init__(self, db_url: str) -> None:
@@ -18,24 +25,26 @@ class VideoRepositoryImp(VideoRepository):
 
     def _to_summary(self, summaries: dict) -> SummaryResponse:
         return SummaryResponse(
-            summary= summaries["summary"],
-            model_name= summaries["model_name"],
-            latest = summaries["latest"],
-            created_at= summaries["created_at"]
+            summary=summaries["summary"],
+            model_name=summaries["model_name"],
+            latest=summaries["latest"],
+            created_at=summaries["created_at"],
         )
 
     def _to_domain(self, result: dict) -> VideoResponse:
         # result = result[0]
         response = VideoResponse(
-            _id = result["_id"],
-            url = result["url"],
-            transcription= result["transcription"],
-            summaries = self._to_summary(result["summaries"][0]),
-            created_at= result["created_at"]
+            _id=result["_id"],
+            url=result["url"],
+            transcription=result["transcription"],
+            summaries=self._to_summary(result["summaries"][0]),
+            created_at=result["created_at"],
         )
         return response
 
-    async def get(self, video_url: Optional[VideoURL] = None, _id: Optional[str] = None)->Optional[VideoResponse]:
+    async def get(
+        self, video_url: Optional[VideoURL] = None, _id: Optional[str] = None
+    ) -> Optional[VideoResponse]:
         try:
             if video_url:
                 result = await self._db.get_video(url=video_url.url)
@@ -59,13 +68,20 @@ class VideoRepositoryImp(VideoRepository):
             result = await self._db.save(
                 summary.url,
                 transcription=summary.transcription,
-                summary = summary.summaries.summary,
-                model_name=summary.summaries.model_name
+                summary=summary.summaries.summary,
+                model_name=summary.summaries.model_name,
             )
+            if result is None:
+                logger.error("Repository save failed: No result returned from database")
+                raise FailedToSave("Failed to save the video and summary")
             logger.info(f"Saved video summary for {summary.url} with id {result}")
-            summary._id=result["_id"]
+            summary._id = result["_id"]
             summary.created_at = result["created_at"]
-            summary.summaries.created_at = result.get("summaries")[0]["created_at"]
+            summary.summaries.created_at = (
+                result["summaries"][0]["created_at"]
+                if result.get("summaries") is not None
+                else None
+            )
             return summary
         except Exception as e:
             logger.error(f"Repository save failed: {str(e)}")
