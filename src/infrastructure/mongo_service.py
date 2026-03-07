@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Optional
+from typing import Any, AsyncIterator, Optional, Union
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -54,7 +54,9 @@ class MongoService:
         """Test the connection (ping)."""
         try:
             await self._client.admin.command("ping")
-            print("Pinged your deployment. You successfully connected to MongoDB!")
+            logger.info(
+                "Pinged your deployment. You successfully connected to MongoDB!"
+            )
         except Exception as e:
             logger.exception(f"MongoDB connection error: {e}")
 
@@ -189,3 +191,95 @@ class MongoService:
             "summaries": [summary_entry],
             "created_at": datetime.now(timezone.utc),
         }
+
+    # ---------- normalization & maintenance helpers ----------
+    def _normalize_doc(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """
+        Convert BSON types (ObjectId) to JSON-serializable Python types.
+        This keeps downstream code independent of Motor/BSON types.
+        """
+        if not isinstance(doc, dict):
+            return doc
+        if isinstance(doc.get("_id"), ObjectId):
+            doc["_id"] = str(doc["_id"])
+        if "created_at" in doc and isinstance(doc["created_at"], datetime):
+            doc["created_at"] = doc["created_at"].isoformat()
+        if "updated_at" in doc and isinstance(doc["updated_at"], datetime):
+            doc["updated_at"] = doc["updated_at"].isoformat()
+        return doc
+
+    async def iter_tasks_by_status(self, status: str) -> AsyncIterator[dict[str, Any]]:
+        """
+        Async iterator over task documents filtered by status.
+        Yields normalized dicts (with string `_id`).
+        """
+        cursor = self._task.find({"status": status})
+        async for doc in cursor:
+            yield self._normalize_doc(doc=doc)
+
+    @handle_mongo_exception
+    async def update_task_after_requeue(
+        self, _id: Union[str, ObjectId], new_task_id: str
+    ):
+        """
+        Update task document after a successful requeue.
+        Accepts either a string _id or ObjectId.
+        """
+        query_id = ObjectId(_id) if isinstance(_id, str) else _id
+        await self._task.update_one(
+            {"_id": query_id},
+            {
+                "$set": {
+                    "task_id": new_task_id,
+                    "status": "QUEUED",
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+
+    @handle_mongo_exception
+    async def update_task_id(self, _id: Union[str, ObjectId], new_task_id: str):
+        """
+        Update task document's task_id without changing status.
+        Accepts either a string _id or ObjectId.
+        """
+        query_id = ObjectId(_id) if isinstance(_id, str) else _id
+        await self._task.update_one(
+            {"_id": query_id},
+            {
+                "$set": {
+                    "task_id": new_task_id,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+
+    @handle_mongo_exception
+    async def mark_task_invalid(self, _id: Union[str, ObjectId]):
+        """
+        Mark a task document as INVALID when it has insufficient data or is malformed.
+        Accepts either a string _id or ObjectId.
+        """
+        query_id = ObjectId(_id) if isinstance(_id, str) else _id
+        await self._task.update_one(
+            {"_id": query_id},
+            {
+                "$set": {
+                    "status": "INVALID",
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+
+    @handle_mongo_exception
+    async def mark_task_requeue_error(self, _id: Union[str, ObjectId]):
+        query_id = ObjectId(_id) if isinstance(_id, str) else _id
+        await self._task.update_one(
+            {"_id": query_id},
+            {
+                "$set": {
+                    "status": "REQUEUE_ERROR",
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
