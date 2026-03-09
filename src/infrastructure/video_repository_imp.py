@@ -23,6 +23,9 @@ class VideoRepositoryImp(VideoRepository):
     async def connect_db(self):
         return await self._db.connect()
 
+    def disconnect_db(self):
+        return self._db.disconnect()
+
     def _to_summary(self, summaries: dict) -> SummaryResponse:
         return SummaryResponse(
             summary=summaries["summary"],

@@ -41,16 +41,14 @@ class UseCase:
         return response
 
     async def _check_if_queued(
-        self, requestID: Optional[str], video: Optional[VideoURL]
+        self, task_id: Optional[str], video: Optional[VideoURL]
     ) -> Optional[dict]:
         """check if the video is already queued for Celery"""
-        if requestID:
-            return await self._mongo_client.get_status(
-                requestID=requestID, video_url=None
-            )
+        if task_id:
+            return await self._mongo_client.get_status(task_id=task_id, video_url=None)
         elif video:
             return await self._mongo_client.get_status(
-                requestID=requestID, video_url=video.url
+                task_id=task_id, video_url=video.url
             )
         else:
             raise InsufficientData("The request is missing the required informations")
@@ -66,7 +64,7 @@ class UseCase:
         self, video: Optional[VideoURL] = None, task_id: Optional[str] = None
     ) -> VideoResponse | str | dict:
         try:
-            is_queued = await self._check_if_queued(requestID=task_id, video=video)
+            is_queued = await self._check_if_queued(task_id=task_id, video=video)
             if is_queued:
                 status = is_queued["status"]
                 if status in ["QUEUED", "STARTED"]:
