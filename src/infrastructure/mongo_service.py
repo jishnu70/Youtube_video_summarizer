@@ -46,6 +46,7 @@ class MongoService:
 
     async def run_init(self):
         """Initialize indexes"""
+        await self.connect()
         await self._collection.create_index("url", unique=True)
         await self._task.create_index("video_url", unique=True)
         logger.info("Mongo indexes ensured")
@@ -143,7 +144,7 @@ class MongoService:
         result_list = await cursor.to_list(length=1)
         if not result_list:
             return None
-        return result_list[0]
+        return self._normalize_doc(result_list[0])
 
     @handle_mongo_exception
     async def save(
@@ -183,7 +184,7 @@ class MongoService:
         }
         result = await self._collection.insert_one(doc)
         if result_obj := await self.get_video(_id=str(result.inserted_id)):
-            return result_obj
+            return self._normalize_doc(result_obj)
         return {
             "_id": str(result.inserted_id),
             "url": url,

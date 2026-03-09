@@ -75,7 +75,7 @@ class TaskMaintenanceService:
 
                 # Send new task
                 new_task = celery_app.send_task(
-                    "src.application.task_maintenance.requeue_task",
+                    "summarize_video_task",
                     args=[url],
                     kwargs={},
                     task_id=old_task_id,  # reuse same task_id to avoid duplicates

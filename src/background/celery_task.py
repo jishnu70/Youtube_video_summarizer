@@ -43,9 +43,10 @@ def queue_yt_video(self, url: str):
         stt_service = STTService()
         correction_service = get_correction_service()
         summarizer_service = SummarizerService()
-        video_repo = VideoRepositoryImp(config.DATABASE_URL)
         mongo = MongoService(uri=config.DATABASE_URL)
         await mongo.run_init()
+
+        video_repo = VideoRepositoryImp(mongo_service=mongo)
 
         await mongo.update_status(self.request.id, "STARTED")
         try:

@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Response, status
 from fastapi.responses import JSONResponse
 
 from src.application.logging_config import setup_logging
+from src.application.task_maintenance import TaskMaintenanceService
 from src.application.use_case import UseCase
 from src.domain.entities import VideoResponse, VideoURL
 from src.domain.model_exceptions import (
@@ -21,7 +22,7 @@ from src.infrastructure.mongo_service import MongoService
 from src.infrastructure.redis_client import get_redis_client
 from src.infrastructure.system_config import config
 from src.infrastructure.video_repository_imp import VideoRepositoryImp
-from src.presentation.container import get_use_case, requeue_stuck_tasks
+from src.presentation.container import get_use_case
 
 setup_logging()
 
@@ -31,17 +32,23 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.warning("lifespan started")
-    video_repo_impl = VideoRepositoryImp(config.DATABASE_URL)
-    await video_repo_impl.connect_db()
+
     r_client = get_redis_client()
     m_client = MongoService(config.DATABASE_URL)
     await m_client.run_init()
-    await requeue_stuck_tasks(m_client)
+
+    video_repo_impl = VideoRepositoryImp(mongo_service=m_client)
+    maintenance = TaskMaintenanceService(mongo=m_client, redis_client=r_client)
+    await maintenance.requeue_stuck_tasks()
+
     repo_use_case = UseCase(video_repo_impl, r_client, m_client)
     app.state.use_case = repo_use_case
+
+    app.state.mongo = m_client
+    app.state.redis = r_client
+
     logger.warning("lifespan set use_case")
     yield
-    video_repo_impl.disconnect_db()
     await r_client.close()
     m_client.disconnect()
     logger.warning("lifespan ended")

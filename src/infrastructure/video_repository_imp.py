@@ -17,14 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 class VideoRepositoryImp(VideoRepository):
-    def __init__(self, db_url: str) -> None:
-        self._db = MongoService(uri=db_url)
-
-    async def connect_db(self):
-        return await self._db.connect()
-
-    def disconnect_db(self):
-        return self._db.disconnect()
+    def __init__(self, mongo_service: MongoService) -> None:
+        self._db = mongo_service
 
     def _to_summary(self, summaries: dict) -> SummaryResponse:
         return SummaryResponse(
