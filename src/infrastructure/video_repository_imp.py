@@ -3,6 +3,9 @@
 import logging
 from typing import Optional
 
+from bson.errors import InvalidId
+from pymongo.errors import PyMongoError
+
 from src.domain.entities import SummaryResponse, VideoResponse, VideoURL
 from src.domain.model_exceptions import (
     FailedToFetch,
@@ -42,20 +45,28 @@ class VideoRepositoryImp(VideoRepository):
     async def get(
         self, video_url: Optional[VideoURL] = None, _id: Optional[str] = None
     ) -> Optional[VideoResponse]:
+        if video_url is None and _id is None:
+            raise InsufficientData("Either video_url or _id must be provided")
         try:
-            if video_url:
-                result = await self._db.get_video(url=video_url.url)
-                if result is None:
-                    logger.warning(f"Video {video_url.url} not found")
+            result = await self._db.get_video(
+                url=video_url.url if video_url else None, _id=_id
+            )
+            if result is None:
+                if video_url:
+                    logger.info(f"Video not found for URL: {video_url.url}")
                     return None
-            elif _id:
-                result = await self._db.get_video(_id=_id)
-                if result is None:
-                    raise VideoNotAvailableError(f"Video with id {_id} not found")
-            else:
-                raise InsufficientData("Either video_url or _id must be provided")
+                # if _id is provided but not found, it's an error
+                logger.info(f"Video not found for ID: {_id}")
+                raise VideoNotAvailableError("The requested video is not available")
 
             return self._to_domain(result)
+        except (VideoNotAvailableError, InsufficientData):
+            raise
+        except InvalidId as e:
+            logger.error(f"Invalid ID format: {str(e)}")
+            raise VideoNotAvailableError("The requested video is not available") from e
+        except PyMongoError as e:
+            logger.error(f"MongoDB error while fetching video: {str(e)}")
         except Exception as e:
             logger.error(f"Repository get failed: {str(e)}")
             raise FailedToFetch("Failed to fetch the video")
