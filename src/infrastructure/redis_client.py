@@ -12,8 +12,6 @@ from src.infrastructure.system_config import config
 
 logger = logging.getLogger(__name__)
 
-_redis_client_instance: Optional["RedisClient"] = None
-
 
 class RedisClient:
     def __init__(self, url: str) -> None:
@@ -119,9 +117,12 @@ class RedisClient:
             logger.exception("Error closing redis connection: %s", e)
 
 
-def get_redis_client() -> RedisClient:
+_redis_client_instance: Optional[RedisClient] = None
+
+
+def get_redis_client(url: str = config.REDIS_URL) -> RedisClient:
     """Return a RedisClient singleton instance"""
     global _redis_client_instance
     if _redis_client_instance is None:
-        _redis_client_instance = RedisClient(config.REDIS_URL)
+        _redis_client_instance = RedisClient(url)
     return _redis_client_instance
