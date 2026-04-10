@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+from uuid import uuid4
 
 import jwt
 from fastapi import HTTPException
@@ -30,6 +31,7 @@ class TokenService:
         now = datetime.now(timezone.utc)
         end_time = now + timedelta(seconds=exp)
         payload = {
+            "jti": str(uuid4()),
             "sub": user_id,
             "token_type": token_type,
             "iat": int(now.timestamp()),
