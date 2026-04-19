@@ -7,7 +7,9 @@ from fastapi import Request
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, model_validator
 
+from src.auth.constants import TokenData
 from src.auth.tokens import get_token_service
+from src.repo.user_repo import get_user_repo
 
 oauth = OAuth()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
@@ -51,6 +53,7 @@ class AuthBase:
     def __init__(self, secret_key: str):
         self.secret_key = secret_key
         self.token_service = get_token_service(secret_key)
+        self.user_repo = get_user_repo()
 
 
 class OAuthBase(AuthBase):
@@ -58,29 +61,4 @@ class OAuthBase(AuthBase):
         super().__init__(secret_key)
 
     async def initiate_oauth(self, request: Request, redirect_url: str) -> None: ...
-    async def handle_callback(self, request: Request) -> dict: ...
-
-
-class GoogleAuth(OAuthBase):
-    def __init__(
-        self, secret_key: str, google_client_id: str, google_client_secret: str
-    ):
-        super().__init__(secret_key)
-        self.g_c_i = google_client_id
-        self.g_c_s = google_client_secret
-
-    async def initiate_oauth(
-        self,
-        request: Request,
-        redirect_url: str,
-    ) -> None:
-        return await oauth.google.authorize_redirect(request, redirect_url)
-
-    async def handle_callback(self, request: Request) -> dict:
-        token = await oauth.google.authorize_access_token(request)
-        user_info = await oauth.google.parse_id_token(request, token)
-        return user_info
-
-    def verify_google_token(self, token: str) -> bool:
-        ...
-        # Implement Google token verification logic here
+    async def handle_callback(self, request: Request) -> TokenData: ...

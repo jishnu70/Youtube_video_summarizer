@@ -3,11 +3,15 @@
 import enum
 import logging
 from functools import lru_cache
-from typing import Optional
+from typing import Annotated, Optional
 
 from bson import ObjectId
+from fastapi import Depends
 from motor.motor_asyncio import AsyncIOMotorCollection
 
+from src.db.base import BaseRepo
+from src.db.helper import IndexConfig
+from src.db.mongo_manager import MongoManager, get_mongo_manager
 from src.infrastructure.mongo_service import handle_mongo_exception
 from src.models.user import UserDB
 
@@ -22,15 +26,45 @@ class UNIQUE_KEYS(enum.Enum):
     PROVIDER_USER_ID = "provider.user_id"
 
 
-class UserRepository:
+class UserRepository(BaseRepo):
     def __init__(self, collection: AsyncIOMotorCollection):
         self._users = collection
 
-    async def ensure_indexes(self):
-        await self._users.create_index("username", unique=True)
-        await self._users.create_index("email", unique=True)
-        await self._users.create_index(
-            [("provider.name", 1), ("provider.user_id", 1)], unique=True, sparse=True
+    async def create_indexes(self):
+        await super().ensure_indexes(
+            [
+                IndexConfig(
+                    key="_id",
+                    order=1,
+                    unique=True,
+                    index_name="unique_id",
+                ),
+                IndexConfig(
+                    key="username",
+                    order=1,
+                    unique=True,
+                    index_name="unique_username",
+                ),
+                IndexConfig(
+                    key="email",
+                    order=1,
+                    unique=True,
+                    index_name="unique_email",
+                ),
+                IndexConfig(
+                    key="provider.name",
+                    order=1,
+                    unique=False,
+                    index_name="provider_name",
+                ),
+                IndexConfig(
+                    key="provider.user_id",
+                    order=1,
+                    unique=True,
+                    sparse=True,
+                    index_name="unique_provider_user_id",
+                ),
+            ]
         )
 
     @handle_mongo_exception
@@ -97,5 +131,5 @@ class UserRepository:
 
 
 @lru_cache(maxsize=1)
-def get_user_repo():
-    return UserRepository(collection=...)
+def get_user_repo(mongoManager: Annotated[MongoManager, Depends(get_mongo_manager)]):
+    return UserRepository(collection=mongoManager.get_collection("users"))

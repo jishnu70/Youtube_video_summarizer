@@ -24,8 +24,8 @@ class TokenService:
     """
 
     def __init__(self, secret_key: str, algorithm: str = "HS256"):
-        self.secret_key = secret_key
-        self.algorithm = algorithm
+        self._secret_key = secret_key
+        self._algorithm = algorithm
 
     def _generate_token(self, user_id: str, exp: int, token_type: TOKEN_TYPE) -> str:
         now = datetime.now(timezone.utc)
@@ -39,7 +39,7 @@ class TokenService:
         }
         try:
             encoded_token = jwt.encode(
-                payload, self.secret_key, algorithm=self.algorithm
+                payload, self._secret_key, algorithm=self._algorithm
             )
         except Exception as e:
             raise RuntimeError(f"Token generation failed: {str(e)}")
@@ -47,7 +47,7 @@ class TokenService:
 
     def verify_token(self, token: str, expected_type: TOKEN_TYPE = "access") -> dict:
         try:
-            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            payload = jwt.decode(token, self._secret_key, algorithms=[self._algorithm])
             user_id: str = payload.get("sub", "")
             if user_id == "":
                 raise CredentialsException
