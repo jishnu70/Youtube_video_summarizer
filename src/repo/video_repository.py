@@ -13,13 +13,12 @@ from src.domain.model_exceptions import (
     InsufficientData,
     VideoNotAvailableError,
 )
-from src.domain.video_repository import VideoRepository
 from src.infrastructure.mongo_service import MongoService
 
 logger = logging.getLogger(__name__)
 
 
-class VideoRepositoryImp(VideoRepository):
+class VideoRepository:
     def __init__(self, mongo_service: MongoService) -> None:
         self._db = mongo_service
 

@@ -21,8 +21,8 @@ from src.domain.model_exceptions import (
 from src.infrastructure.mongo_service import MongoService
 from src.infrastructure.redis_client import get_redis_client
 from src.infrastructure.system_config import config
-from src.infrastructure.video_repository_imp import VideoRepositoryImp
 from src.presentation.container import get_use_case
+from src.repo.video_repository import VideoRepository
 
 setup_logging()
 
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     m_client = MongoService(config.DATABASE_URL)
     await m_client.run_init()
 
-    video_repo_impl = VideoRepositoryImp(mongo_service=m_client)
+    video_repo_impl = VideoRepository(mongo_service=m_client)
     maintenance = TaskMaintenanceService(mongo=m_client, redis_client=r_client)
     await maintenance.requeue_stuck_tasks()
 

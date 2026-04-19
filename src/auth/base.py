@@ -6,10 +6,10 @@ from authlib.integrations.starlette_client import OAuth
 from fastapi import Request
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, model_validator
+from src.repo.user_repo import get_user_repo
 
 from src.auth.constants import TokenData
 from src.auth.tokens import get_token_service
-from src.repo.user_repo import get_user_repo
 
 oauth = OAuth()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")

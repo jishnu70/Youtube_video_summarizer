@@ -6,7 +6,6 @@ from uuid import uuid4
 
 import jwt
 from fastapi import HTTPException
-
 from src.auth.constants import (
     ACCESS_TOKEN_EXP,
     REFRESH_TOKEN_EXP,

@@ -34,7 +34,7 @@ def queue_yt_video(self, url: str):
     """
 
     logger.info("Entered the Celery queue")
-    redis_client = get_redis_client()
+    redis_client = get_redis_client(config.REDIS_URL)
 
     async def run_pipeline():
         logger.info("Running the asynchronous run_pipeline method")

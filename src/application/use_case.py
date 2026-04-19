@@ -8,9 +8,9 @@ import redis
 from src.background.celery_app import celery_app
 from src.domain.entities import TaskStatusResponse, VideoResponse, VideoURL
 from src.domain.model_exceptions import InsufficientData, TaskIDError
-from src.domain.video_repository import VideoRepository
 from src.infrastructure.mongo_service import MongoService
 from src.infrastructure.redis_client import RedisClient
+from src.repo.video_repository import VideoRepository
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,13 @@
 # src/infrastructure/yt_service.py
 
+import asyncio
 import json
 from io import BytesIO
-import asyncio
-from typing import Optional
-import yt_dlp
+from typing import AsyncGenerator, Optional
+
 import requests
+import yt_dlp
+
 
 class YoutubeService:
     def __init__(self, chunk_duration_ms: int = 120_000) -> None:
@@ -30,7 +32,7 @@ class YoutubeService:
                     text_segments.append(seg["utf8"].replace("\n", " "))
         return " ".join(text_segments)
 
-    def download_captions(self, url: str, lang: str = "en")->Optional[str]:
+    def download_captions(self, url: str, lang: str = "en") -> Optional[str]:
         """
         Download captions text if available.
         Returns text or None if captions are not available.
@@ -102,25 +104,107 @@ class YoutubeService:
     #         if os.path.exists(actual_output):
     #             os.unlink(actual_output)
 
+    async def stream_audio(self, url: str) -> AsyncGenerator[BytesIO, None]:
+        process = await asyncio.create_subprocess_exec(
+            "yt-dlp",
+            "-f",
+            "bestaudio/best",
+            "-o",
+            "-",
+            "--extract-audio",
+            "--audio-format",
+            "wav",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        ffmpeg = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-i",
+            "pipe:0",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-f",
+            "wav",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        async def pump():
+            try:
+                while True:
+                    data = await process.stdout.read(4096)
+                    if not data:
+                        break
+                    ffmpeg.stdin.write(data)
+                    await ffmpeg.stdin.drain()
+            finally:
+                ffmpeg.stdin.close()
+
+        pump_task = asyncio.create_task(pump())
+        # ~16kHz mono PCM → ~32KB/sec (approx for int16)
+        target_size = 32_000 * 20  # 20 seconds of audio
+        buffer = BytesIO()
+        while True:
+            chunk = await ffmpeg.stdout.read(4096)
+            if not chunk:
+                break
+            buffer.write(chunk)
+            if buffer.tell() >= target_size:
+                buffer.seek(0)
+                yield buffer
+                buffer = BytesIO()
+        if buffer.tell() > 0:
+            buffer.seek(0)
+            yield buffer
+
+        await pump_task
+        await process.wait()
+        await ffmpeg.wait()
 
     async def download(self, url: str):
         cmd = [
             "yt-dlp",
-            "-f", "bestaudio/best",
-            "-o", "-",
+            "-f",
+            "bestaudio/best",
+            "-o",
+            "-",
             "--extract-audio",
-            "--audio-format", "wav",
+            "--audio-format",
+            "wav",
             url,
         ]
         # First, get the raw audio stream
         process = await asyncio.create_subprocess_exec(
-            "yt-dlp", "-f", "bestaudio/best", "-o", "-", "--extract-audio", "--audio-format", "wav", url,
+            "yt-dlp",
+            "-f",
+            "bestaudio/best",
+            "-o",
+            "-",
+            "--extract-audio",
+            "--audio-format",
+            "wav",
+            url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         # Then pipe it to ffmpeg for conversion to wav
         ffmpeg_process = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-i", "pipe:0", "-ar", "16000", "-ac", "1", "-f", "wav", "pipe:1",
+            "ffmpeg",
+            "-i",
+            "pipe:0",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-f",
+            "wav",
+            "pipe:1",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
