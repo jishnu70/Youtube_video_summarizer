@@ -13,3 +13,4 @@ req.txt
 temp.txt
 *.rdb
 redis_data
+req.*
