@@ -13,61 +13,50 @@ import (
  * DB struct representing the Video entity in the database.
  */
 type VideoDB struct {
-	ID         bson.ObjectID `bson:"_id"`
-	URL        string        `bson:"url"`
-	Transcript *string       `bson:"transcript,omitempty"`
+	ID         bson.ObjectID `bson:"_id" json:"id"`
+	VideoURL   string        `bson:"video_url" json:"video_url"`
+	Transcript *string       `bson:"transcript,omitempty" json:"transcript,omitempty"`
+	CreatedAt  time.Time     `bson:"created_at" json:"created_at"`
+	UpdatedAt  time.Time     `bson:"updated_at" json:"updated_at"`
+
 	// transcript is optional, so we use a pointer to string to allow nil values
 	// when the video is first created and the transcript is not yet available.
 	// we need a base data struct to represent the video entity
 	// the moment Transcript is available, we can update the Video entity with the transcript.
-	CreatedAt time.Time `bson:"created_at"`
-	UpdatedAt time.Time `bson:"updated_at"`
 }
 
 func (v *VideoDB) ToDomain() *domain.Video {
-	id := v.ID.Hex()
 	return &domain.Video{
-		ID:         &id,
-		URL:        v.URL,
+		ID:         v.ID.Hex(),
+		VideoURL:   v.VideoURL,
 		Transcript: v.Transcript,
 		CreatedAt:  v.CreatedAt,
 		UpdatedAt:  v.UpdatedAt,
 	}
 }
 
-/*
- * DB struct representing the Summary entity in the database.
- * SummaryObject is a nested struct within SummaryDB to represent the summary details.
- * SummaryDBList is a struct for a list of summaries for a video, including the video ID and URL.
- * SummaryDB is a struct for a single summary for a video, including the video ID and summary details.
- */
-type SummaryObject struct {
-	Summary   string    `bson:"summary"`
-	ModelName string    `bson:"model_name"`
-	CreatedAt time.Time `bson:"created_at"`
-}
-
-type SummaryDBList struct {
-	ID        bson.ObjectID    `bson:"_id"`
-	VideoID   bson.ObjectID    `bson:"video_id"`
-	VideoUrl  string           `bson:"video_url"`
-	Summaries []*SummaryObject `bson:"summaries"`
-}
-
+// NewSummaryDB is a struct for inserting:
+// - video_id of the video
+// - video_url of the video
+// - summary of video
+// - model_name of the model used to generate the summary
+// - created_at timestamp of when the summary was created
 type SummaryDB struct {
-	ID       bson.ObjectID `bson:"_id"`
-	VideoID  bson.ObjectID `bson:"video_id"`
-	VideoUrl string        `bson:"video_url"`
-	Summary  SummaryObject `bson:"summaryObject"`
+	ID        bson.ObjectID `bson:"_id" json:"id"`
+	VideoID   bson.ObjectID `bson:"video_id" json:"video_id"`
+	VideoUrl  string        `bson:"video_url" json:"video_url"`
+	Summary   string        `bson:"summary" json:"summary"`
+	ModelName string        `bson:"model_name" json:"model_name"`
+	CreatedAt time.Time     `bson:"created_at" json:"created_at"`
 }
 
 func (s *SummaryDB) ToDomain() *domain.Summary {
 	return &domain.Summary{
 		ID:        s.ID.Hex(),
 		VideoID:   s.VideoID.Hex(),
-		Summary:   s.Summary.Summary,
-		ModelName: s.Summary.ModelName,
-		CreatedAt: s.Summary.CreatedAt,
+		Summary:   s.Summary,
+		ModelName: s.ModelName,
+		CreatedAt: s.CreatedAt,
 	}
 }
 
@@ -83,28 +72,24 @@ func (s *SummaryDB) ToDomain() *domain.Summary {
  * 	UpdatedAt: timestamp when the task was last updated
  */
 type BackgroundTaskStatusDB struct {
-	ID        bson.ObjectID     `bson:"_id"`
-	TaskID    string            `bson:"task_id"`
-	URL       string            `bson:"url"`
-	Video     *VideoDB          `bson:"video,omitempty"`
-	Status    domain.TaskStatus `bson:"status"`
-	Message   *string           `bson:"message,omitempty"`
-	CreatedAt time.Time         `bson:"created_at"`
-	UpdatedAt time.Time         `bson:"updated_at"`
+	ID        bson.ObjectID     `bson:"_id" json:"id"`
+	VideoID   string            `bson:"video_id" json:"video_id"`
+	Status    domain.TaskStatus `bson:"status" json:"status"`
+	Message   *string           `bson:"message,omitempty" json:"message,omitempty"`
+	CreatedAt time.Time         `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time         `bson:"updated_at" json:"updated_at"`
 }
 
 func (b *BackgroundTaskStatusDB) ToDomain() *domain.BackgroundTaskStatus {
-	var video *domain.Video
-	if b.Video != nil {
-		video = b.Video.ToDomain()
+	message := ""
+	if b.Message != nil {
+		message = *b.Message
 	}
 	return &domain.BackgroundTaskStatus{
 		ID:        b.ID.Hex(),
-		TaskID:    b.TaskID,
-		URL:       b.URL,
-		Video:     video,
+		VideoID:   b.VideoID,
 		Status:    b.Status,
-		Message:   b.Message,
+		Message:   message,
 		CreatedAt: b.CreatedAt,
 		UpdatedAt: b.UpdatedAt,
 	}
