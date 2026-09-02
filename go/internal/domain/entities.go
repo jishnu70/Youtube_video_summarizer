@@ -30,7 +30,7 @@ type VideoSummary struct {
 
 type BackgroundTaskStatus struct {
 	ID        string
-	VideoID   string
+	VideoURL  string
 	Message   string
 	Status    TaskStatus
 	CreatedAt time.Time

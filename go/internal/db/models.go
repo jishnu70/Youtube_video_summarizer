@@ -73,7 +73,7 @@ func (s *SummaryDB) ToDomain() *domain.Summary {
  */
 type BackgroundTaskStatusDB struct {
 	ID        bson.ObjectID     `bson:"_id" json:"id"`
-	VideoID   string            `bson:"video_id" json:"video_id"`
+	VideoURL  string            `bson:"video_url" json:"video_url"`
 	Status    domain.TaskStatus `bson:"status" json:"status"`
 	Message   *string           `bson:"message,omitempty" json:"message,omitempty"`
 	CreatedAt time.Time         `bson:"created_at" json:"created_at"`
@@ -87,7 +87,7 @@ func (b *BackgroundTaskStatusDB) ToDomain() *domain.BackgroundTaskStatus {
 	}
 	return &domain.BackgroundTaskStatus{
 		ID:        b.ID.Hex(),
-		VideoID:   b.VideoID,
+		VideoURL:  b.VideoURL,
 		Status:    b.Status,
 		Message:   message,
 		CreatedAt: b.CreatedAt,

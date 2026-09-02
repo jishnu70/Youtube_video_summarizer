@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	db "github.com/jishnu70/Youtube_video_summarizer/internal/db"
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -29,161 +30,143 @@ func NewSummaryRepo(mongoDB *db.MongoDB, collectionName string) (*SummaryRepo, e
 	}, nil
 }
 
-func (r *SummaryRepo) Insert(ctx context.Context, summary *db.SummaryDB) (*db.SummaryDB, error) {
-	// Implement the logic to insert a summary document into the collection
+func (r *SummaryRepo) EnsureIndex(ctx context.Context) error {
+	indexModel := []mongo.IndexModel{
+		{Keys: bson.D{
+			{Key: "video_id", Value: 1},
+			{Key: "created_at", Value: -1},
+		}, Options: options.Index()},
+		{Keys: bson.D{
+			{Key: "video_url", Value: 1},
+		}, Options: options.Index()},
+	}
+	_, err := r.collection.Indexes().CreateMany(ctx, indexModel)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *SummaryRepo) Insert(ctx context.Context, summary *domain.Summary) (*domain.Summary, error) {
 	if summary == nil {
 		return nil, errors.New("summary is nil")
 	}
-	filter := bson.D{{Key: "video_id", Value: summary.VideoID}}
-	insertSummary := bson.M{
-		"$push":        bson.M{"summaries": summary.Summary},
-		"$setOnInsert": bson.M{"video_url": summary.VideoID},
+	videoID, err := bson.ObjectIDFromHex(summary.VideoID)
+	if err != nil {
+		return nil, errors.New("invalid video ID")
 	}
-	opts := options.UpdateOne().SetUpsert(true)
-	result, err := r.collection.UpdateOne(ctx, filter, insertSummary, opts)
+	summaryDBL := &db.SummaryDB{
+		ID:        bson.NewObjectID(),
+		VideoID:   videoID,
+		VideoUrl:  summary.VideoUrl,
+		Summary:   summary.Summary,
+		ModelName: summary.ModelName,
+		CreatedAt: summary.CreatedAt,
+	}
+	_, err = r.collection.InsertOne(ctx, summaryDBL)
 	if err != nil {
 		return nil, err
 	}
-	var resultID bson.ObjectID
-	if result.UpsertedCount > 0 {
-		if id, ok := result.UpsertedID.(bson.ObjectID); ok {
-			resultID = id
-		} else {
-			return nil, errors.New("failed to get upserted ID")
-		}
-	} else {
-		existing, err := r.FindByVideoID(ctx, summary.VideoID)
-		if err != nil {
-			return nil, err
-		}
-		resultID = existing.ID
-	}
-	return &db.SummaryDB{
-		ID:       resultID,
-		VideoID:  summary.VideoID,
-		VideoUrl: summary.VideoUrl,
-		Summary:  summary.Summary,
-	}, nil
+	return summaryDBL.ToDomain(), nil
 }
 
-// findPipeline is a helper function that performs an aggregation query on the summary collection.
-// It takes a context and a filter as input, and returns the first matching summary document.
-// The aggregation pipeline sorts the summaries by created_at in descending order
-// and projects the latest summary.
-func (r *SummaryRepo) findPipeline(ctx context.Context, filter bson.D) (*db.SummaryDB, error) {
-	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: filter}},
-		{{Key: "$project", Value: bson.M{
-			"_id":       1,
-			"video_id":  1,
-			"video_url": 1,
-			"summaryObject": bson.M{
-				"$arrayElemAt": []any{
-					bson.M{
-						"$sortArray": bson.M{
-							"input":  "$summaries",
-							"sortBy": bson.M{"created_at": -1},
-						},
-					},
-					0,
-				},
-			},
-		}}},
-	}
-
-	cursor, err := r.collection.Aggregate(ctx, pipeline)
+func (r *SummaryRepo) FindByID(ctx context.Context, id string) (*domain.Summary, error) {
+	bsonID, err := bson.ObjectIDFromHex(id)
 	if err != nil {
+		return nil, errors.New("invalid summary ID")
+	}
+	filter := bson.D{{Key: "_id", Value: bsonID}}
+	var summary db.SummaryDB
+	err = r.collection.FindOne(ctx, filter).Decode(&summary)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, errors.New("summary not found")
+		}
 		return nil, err
 	}
-	defer cursor.Close(ctx)
+	return summary.ToDomain(), nil
+}
 
-	var summaries []db.SummaryDB
-	if err = cursor.All(ctx, &summaries); err != nil {
+func (r *SummaryRepo) FindByVideoID(ctx context.Context, videoID string) (*domain.Summary, error) {
+	bsonVideoID, err := bson.ObjectIDFromHex(videoID)
+	if err != nil {
+		return nil, errors.New("invalid video ID")
+	}
+	filter := bson.D{{Key: "video_id", Value: bsonVideoID}}
+	opts := options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	var summary db.SummaryDB
+	err = r.collection.FindOne(ctx, filter, opts).Decode(&summary)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, errors.New("summary not found")
+		}
 		return nil, err
 	}
-	if len(summaries) == 0 {
-		return nil, errors.New("no summaries found")
-	}
-	return &summaries[0], nil
+	return summary.ToDomain(), nil
 }
 
-func (r *SummaryRepo) FindByID(ctx context.Context, id bson.ObjectID) (*db.SummaryDB, error) {
-	filter := bson.D{{Key: "_id", Value: id}}
-	return r.findPipeline(ctx, filter)
-}
-
-func (r *SummaryRepo) FindByVideoID(ctx context.Context, videoID bson.ObjectID) (*db.SummaryDB, error) {
-	filter := bson.D{{Key: "video_id", Value: videoID}}
-	return r.findPipeline(ctx, filter)
-}
-
-func (r *SummaryRepo) FindByVideoURL(ctx context.Context, videoURL string) (*db.SummaryDB, error) {
+func (r *SummaryRepo) FindByVideoURL(ctx context.Context, videoURL string) (*domain.Summary, error) {
 	filter := bson.D{{Key: "video_url", Value: videoURL}}
-	return r.findPipeline(ctx, filter)
-}
-
-// GetVideoCursor retrieves a paginated list of summaries from the summary collection.
-// It takes a context, an optional lastID for pagination, and a pageLimit for the number of summaries to retrieve.
-// If lastID is provided, it fetches summaries with IDs greater than lastID; otherwise, it fetches from the beginning.
-// The results are sorted by ID in ascending order.
-func (r *SummaryRepo) GetVideoCursor(
-	ctx context.Context,
-	lastID *bson.ObjectID,
-	pageLimit int64,
-) ([]db.SummaryDBList, error) {
-	if pageLimit < 1 {
-		pageLimit = 10
-	}
-	filter := bson.D{}
-	if lastID != nil {
-		filter = bson.D{{Key: "_id", Value: bson.D{{Key: "$gt", Value: *lastID}}}}
-	} else {
-		filter = bson.D{}
-	}
-	opt := options.Find().SetLimit(pageLimit).SetSort(bson.D{{Key: "_id", Value: 1}})
-	cursor, err := r.collection.Find(ctx, filter, opt)
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var summaries []db.SummaryDBList
-	if err = cursor.All(ctx, &summaries); err != nil {
-		return nil, err
-	}
-	if len(summaries) == 0 {
-		return nil, errors.New("no summaries found")
-	}
-	return summaries, nil
-}
-
-func (r *SummaryRepo) GetSingleVideoWithPaginatedSummaries(
-	ctx context.Context,
-	videoID bson.ObjectID,
-	lastSeenIndex int64,
-	pageLimit int64,
-) (*db.SummaryDBList, error) {
-	if lastSeenIndex < 0 {
-		lastSeenIndex = 0
-	}
-	if pageLimit < 1 {
-		pageLimit = 10
-	}
-	filter := bson.D{{Key: "video_id", Value: videoID}}
-
-	projections := bson.M{
-		"summaries": bson.M{
-			"$slice": []int64{lastSeenIndex, pageLimit},
-		},
-	}
-	opts := options.FindOne().SetProjection(projections)
-	var summary db.SummaryDBList
+	opts := options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	var summary db.SummaryDB
 	err := r.collection.FindOne(ctx, filter, opts).Decode(&summary)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, errors.New("no summaries found for the given video ID")
+			return nil, errors.New("summary not found")
 		}
 		return nil, err
 	}
-	return &summary, nil
+	return summary.ToDomain(), nil
+}
+
+func (r *SummaryRepo) FindAllByVideoID(
+	ctx context.Context,
+	videoID string,
+	lastID string,
+	limit int64,
+) ([]*domain.Summary, error) {
+	return r.FindAllSummaries(ctx, &videoID, lastID, limit)
+}
+
+func (r *SummaryRepo) FindAllSummaries(
+	ctx context.Context,
+	videoID *string,
+	lastID string,
+	limit int64,
+) ([]*domain.Summary, error) {
+	filter := bson.D{}
+	if videoID != nil {
+		bsonVideoID, err := bson.ObjectIDFromHex(*videoID)
+		if err != nil {
+			return nil, errors.New("invalid video ID")
+		}
+		filter = append(filter, bson.E{Key: "video_id", Value: bsonVideoID})
+	}
+	bsonLastID, err := bson.ObjectIDFromHex(lastID)
+	if err != nil {
+		return nil, errors.New("invalid last ID")
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(limit)
+	filter = append(filter, bson.E{Key: "_id", Value: bson.D{{Key: "$lt", Value: bsonLastID}}})
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var domainSummaries []*domain.Summary
+
+	for cursor.Next(ctx) {
+		var summary db.SummaryDB
+		if err := cursor.Decode(&summary); err != nil {
+			return nil, err
+		}
+		domainSummaries = append(domainSummaries, summary.ToDomain())
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	return domainSummaries, nil
 }
