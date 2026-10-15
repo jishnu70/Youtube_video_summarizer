@@ -14,12 +14,16 @@ def _safe_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
-async def _validate_youtube_url(url: str) -> bool:
+async def validate_youtube_url(payload: VideoSummaryRequest) -> bool:
     """
     Validate if the provided URL is a valid YouTube video URL.
     """
+    url_to_parse = payload.url.strip()
+    if not url_to_parse.startswith(("http://", "https://")):
+        url_to_parse = "https://" + url_to_parse
+
     try:
-        parsed_url = urllib.parse.urlparse(url)
+        parsed_url = urllib.parse.urlparse(url_to_parse)
         domain = parsed_url.netloc.lower()
         path = parsed_url.path  # Keep original casing; YouTube IDs are case-sensitive
     except Exception as e:
@@ -103,7 +107,3 @@ async def _validate_youtube_url(url: str) -> bool:
             )
 
     return True
-
-
-async def validate_youtube_url(payload: VideoSummaryRequest) -> bool:
-    return await _validate_youtube_url(payload.url)
