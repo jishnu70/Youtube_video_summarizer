@@ -26,25 +26,34 @@ func New(uri, databaseName string) (*MongoDB, error) {
 	client, err := mongo.Connect(clientOptions)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, domain.ErrDBConnectionTimeout
+			return nil, domain.NewAppError(
+				domain.DatabaseLayer,
+				domain.CodeTimeout,
+				domain.ErrDBConnectionTimeout,
+				err,
+			)
 		}
-		return nil, domain.ErrDBConnectionFailed
+		return nil, domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBConnectionFailed,
+			err,
+		)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if pingErr := client.Ping(ctx, nil); pingErr != nil {
-		if err := client.Disconnect(ctx); err != nil {
-			return nil, domain.ErrDBDisconnectFailed
-		} // Disconnect the client if ping fails
-		return nil, domain.ErrDBPingFailed
+		_ = client.Disconnect(ctx)
+		return nil, domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBConnectionFailed,
+			pingErr,
+		)
 	}
 	database := client.Database(databaseName)
-
-	if database == nil {
-		return nil, domain.ErrDBDatabaseNotInitialized
-	}
 
 	return &MongoDB{
 		client:   client,
@@ -54,24 +63,39 @@ func New(uri, databaseName string) (*MongoDB, error) {
 
 func (m *MongoDB) Ping(ctx context.Context) error {
 	// Implement a ping method to check the connection to MongoDB
-	if m.client == nil {
-		return domain.ErrDBClientNotInitialized
+	if err := m.client.Ping(ctx, nil); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return domain.NewAppError(
+				domain.DatabaseLayer,
+				domain.CodeTimeout,
+				domain.ErrDBConnectionTimeout,
+				err,
+			)
+		}
+		return domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBPingFailed,
+			err,
+		)
 	}
-	return m.client.Ping(ctx, nil)
+	return nil
 }
 
 func (m *MongoDB) Close(ctx context.Context) error {
 	// Implement a method to close the MongoDB connection
-	if m.client == nil {
-		return domain.ErrDBClientNotInitialized
+	if err := m.client.Disconnect(ctx); err != nil {
+		return domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBDisconnectFailed,
+			err,
+		)
 	}
-	return m.client.Disconnect(ctx)
+	return nil
 }
 
-func (m *MongoDB) Collection(collectionName string) (*mongo.Collection, error) {
+func (m *MongoDB) Collection(collectionName string) *mongo.Collection {
 	// Implement a method to get a collection from the MongoDB database
-	if m.database == nil {
-		return nil, domain.ErrDBDatabaseNotInitialized
-	}
-	return m.database.Collection(collectionName), nil
+	return m.database.Collection(collectionName)
 }

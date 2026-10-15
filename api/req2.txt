@@ -1,0 +1,1559 @@
+package main
+
+// api/requests/main.go
+
+import (
+	"errors"
+	"log"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
+
+	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+
+	config "github.com/jishnu70/Youtube_video_summarizer/internal/config"
+	db "github.com/jishnu70/Youtube_video_summarizer/internal/db"
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	repo "github.com/jishnu70/Youtube_video_summarizer/internal/repo"
+	service "github.com/jishnu70/Youtube_video_summarizer/internal/service"
+	handler "github.com/jishnu70/Youtube_video_summarizer/requests/handler"
+)
+
+func initializeClients(c *config.Config) (*db.MongoDB, *redis.Client) {
+	mongoClient, err := db.New(c.MongoURI, c.MongoDatabase)
+	if err != nil {
+		log.Fatalf("failed to connect to MongoDB: %v", err)
+	}
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     c.RedisAddr,
+		Password: c.RedisPassword,
+	})
+
+	return mongoClient, redisClient
+}
+
+func initializeRepositories(mongoClient *db.MongoDB, redisClient *redis.Client, c *config.Config) (*repo.SummaryRepo, *repo.TaskRepo, *repo.CacheRepo) {
+	summaryRepo, err := repo.NewSummaryRepo(mongoClient, c.SummaryCollection)
+	if err != nil {
+		log.Fatalf("failed to create summary repo: %v", err)
+	}
+	taskRepo, err := repo.NewTaskRepo(mongoClient, c.TaskCollection)
+	if err != nil {
+		log.Fatalf("failed to create task repo: %v", err)
+	}
+	cacheRepo := repo.NewCacheRepo(redisClient)
+
+	return summaryRepo, taskRepo, cacheRepo
+}
+
+func initializeServices(summaryRepo *repo.SummaryRepo, taskRepo *repo.TaskRepo, cacheRepo *repo.CacheRepo) (*service.SummaryService, *service.TaskService, *service.CacheService) {
+	cacheService, err := service.NewCacheService(cacheRepo)
+	if err != nil {
+		log.Fatalf("failed to create cache service: %v", err)
+	}
+
+	summaryService, err := service.NewSummaryService(summaryRepo, cacheService)
+	if err != nil {
+		log.Fatalf("failed to create summary service: %v", err)
+	}
+
+	taskService, err := service.NewTaskService(taskRepo, cacheService)
+	if err != nil {
+		log.Fatalf("failed to create task service: %v", err)
+	}
+
+	return summaryService, taskService, cacheService
+}
+
+func initializeRequestHandler(summaryService *service.SummaryService, taskService *service.TaskService) *handler.RequestHandler {
+	requestHandler := handler.NewRequestHandler(summaryService, taskService)
+	return requestHandler
+}
+
+func main() {
+	config, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	mongoClient, redisClient := initializeClients(config)
+	summaryRepo, taskRepo, cacheRepo := initializeRepositories(mongoClient, redisClient, config)
+	summaryService, taskService, _ := initializeServices(summaryRepo, taskRepo, cacheRepo)
+	requestHandler := initializeRequestHandler(summaryService, taskService)
+
+	app := gin.Default()
+	app.Use(gin.Recovery())
+	app.Use(gin.Logger())
+	app.Use(ErrorHandlingMiddleware())
+
+	app.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status": "OK",
+		})
+	})
+
+	app.GET("/summary/", requestHandler.GetSummary)
+	app.GET("/task/", requestHandler.GetTaskStatus)
+
+	log.Fatal(app.Run(":8080"))
+}
+
+func ErrorHandlingMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if err := recover(); err != nil {
+				slog.Error("CRITICAL PANIC RECOVERED",
+					"error", err,
+					"stack", string(debug.Stack()),
+					"path", c.Request.URL.Path,
+				)
+
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+					"code":    "INTERNAL_SERVER_ERROR",
+					"message": "An unexpected error occurred.",
+				})
+			}
+		}()
+
+		c.Next()
+
+		if len(c.Errors) > 0 {
+			err := c.Errors.Last().Err
+
+			switch {
+			case errors.Is(err, domain.ErrVideoURLEmpty),
+				errors.Is(err, domain.ErrTaskIDEmpty),
+				errors.Is(err, domain.ErrDBInvalidObjectID):
+				slog.Warn("Client validation error", "error", err.Error(), "path", c.Request.URL.Path)
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+					"code":    "BAD_REQUEST",
+					"message": err.Error(), // Safe to show: "video URL is empty", etc.
+				})
+			case errors.Is(err, domain.ErrSummaryNotFound),
+				errors.Is(err, domain.ErrTaskNotFound),
+				errors.Is(err, domain.ErrTaskIDNotFound):
+				slog.Info("Resource not found", "error", err.Error(), "path", c.Request.URL.Path)
+				c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
+					"code":    "NOT_FOUND",
+					"message": err.Error(), // Safe to show: "summary not found", etc.
+				})
+			default:
+				slog.Error("Unhandled infrastructure or system error",
+					"error", err.Error(),
+					"path", c.Request.URL.Path,
+				)
+
+				// Mask the error completely from the client to prevent security leaks
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+					"code":    "INTERNAL_SERVER_ERROR",
+					"message": "An unexpected server error occurred. Please try again later.",
+				})
+			}
+		}
+	}
+}
+package config
+
+// api/internal/config/config.go
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+)
+
+type Config struct {
+
+	// mongo related configuration
+	MongoURI      string
+	MongoDatabase string
+
+	// collection names
+	TaskCollection    string
+	SummaryCollection string
+
+	// redis related configuration
+	RedisHost     string
+	RedisPort     int
+	RedisAddr     string
+	RedisPassword string
+}
+
+func LoadConfig() (*Config, error) {
+	config := &Config{}
+	if err := config.LoadMongoConfig(); err != nil {
+		return nil, err
+	}
+	if err := config.loadRedisConfig(); err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+func (c *Config) LoadMongoConfig() error {
+	envMapping := []struct {
+		key   string
+		value *string
+	}{
+		{"MONGO_URI", &c.MongoURI},
+		{"MONGO_DATABASE", &c.MongoDatabase},
+		{"TASK_COLLECTION", &c.TaskCollection},
+		{"SUMMARY_COLLECTION", &c.SummaryCollection},
+	}
+
+	for _, env := range envMapping {
+		value := os.Getenv(env.key)
+		if value == "" {
+			return domain.NewAppError(
+				domain.ConfigLayer,
+				domain.CodeInvalidInput,
+				fmt.Sprintf("%s: %s", domain.ErrConfigMissingField, env.key),
+				nil,
+			)
+		}
+		*env.value = value
+	}
+	return nil
+}
+
+func (c *Config) loadRedisConfig() error {
+	envMapping := []struct {
+		key   string
+		value *string
+	}{
+		{"REDIS_HOST", &c.RedisHost},
+		{"REDIS_PASSWORD", &c.RedisPassword},
+	}
+
+	for _, env := range envMapping {
+		value := os.Getenv(env.key)
+		if value == "" {
+			return domain.NewAppError(
+				domain.ConfigLayer,
+				domain.CodeInvalidInput,
+				fmt.Sprintf("%s: %s", domain.ErrConfigMissingField, env.key),
+				nil,
+			)
+		}
+		*env.value = value
+	}
+
+	// Handle REDIS_PORT separately since it needs to be converted to an integer
+	portStr := os.Getenv("REDIS_PORT")
+	if portStr == "" {
+		return domain.NewAppError(
+			domain.ConfigLayer,
+			domain.CodeInvalidInput,
+			fmt.Sprintf("%s: %s", domain.ErrConfigMissingField, "REDIS_PORT"),
+			nil,
+		)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return domain.NewAppError(
+			domain.ConfigLayer,
+			domain.CodeInvalidInput,
+			fmt.Sprintf("%s: %s", domain.ErrConfigInvalidValue, "REDIS_PORT"),
+			err,
+		)
+	}
+	c.RedisPort = port
+
+	c.RedisAddr = fmt.Sprintf("%s:%d", c.RedisHost, c.RedisPort)
+
+	return nil
+}
+package db
+
+// api/internal/db/models.go
+
+import (
+	"time"
+
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	"go.mongodb.org/mongo-driver/v2/bson"
+)
+
+// NewSummaryDB is a struct for inserting:
+// - video_id of the video
+// - video_url of the video
+// - summary of video
+// - model_name of the model used to generate the summary
+// - created_at timestamp of when the summary was created
+type SummaryDB struct {
+	ID        bson.ObjectID `bson:"_id" json:"id"`
+	VideoURL  string        `bson:"video_url" json:"video_url"`
+	Summary   string        `bson:"summary" json:"summary"`
+	ModelName string        `bson:"model_name" json:"model_name"`
+	CreatedAt time.Time     `bson:"created_at" json:"created_at"`
+}
+
+func (s *SummaryDB) ToDomain() *domain.Summary {
+	return &domain.Summary{
+		ID:        s.ID.Hex(),
+		VideoURL:  s.VideoURL,
+		Summary:   s.Summary,
+		ModelName: s.ModelName,
+		CreatedAt: s.CreatedAt,
+	}
+}
+
+/*
+ * DB struct representing the BackgroundTaskStatus entity in the database.
+ * BackgroundTaskStatusDB is a struct for a background task status:
+ * 	TaskID: unique identifier for the task
+ * 	URL: the URL of the video being processed
+ * 	Video: optional VideoDB struct representing the video being processed
+ * 	Status: the current status of the task (queued, started, processing, completed, failed, timeout, cancelled, unknown)
+ * 	Message: optional message providing additional information about the task status
+ * 	CreatedAt: timestamp when the task was created
+ * 	UpdatedAt: timestamp when the task was last updated
+ */
+type BackgroundTaskStatusDB struct {
+	ID        bson.ObjectID     `bson:"_id" json:"id"`
+	VideoURL  string            `bson:"video_url" json:"video_url"`
+	Message   string            `bson:"message" json:"message"`
+	Status    domain.TaskStatus `bson:"status" json:"status"`
+	CreatedAt time.Time         `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time         `bson:"updated_at" json:"updated_at"`
+}
+
+func (b *BackgroundTaskStatusDB) ToDomain() *domain.BackgroundTaskStatus {
+	return &domain.BackgroundTaskStatus{
+		ID:        b.ID.Hex(),
+		VideoURL:  b.VideoURL,
+		Message:   b.Message,
+		Status:    b.Status,
+		CreatedAt: b.CreatedAt,
+		UpdatedAt: b.UpdatedAt,
+	}
+}
+package db
+
+// api/internal/db/mongo.go
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+type MongoDB struct {
+	// Add fields for MongoDB connection, e.g., client, database, collection, etc.
+	client   *mongo.Client
+	database *mongo.Database
+}
+
+func New(uri, databaseName string) (*MongoDB, error) {
+	// Initialize MongoDB connection here using the provided URI
+	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
+	clientOptions := options.Client().ApplyURI(uri).SetServerAPIOptions(serverAPI).SetTimeout(5 * time.Second)
+
+	client, err := mongo.Connect(clientOptions)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, domain.NewAppError(
+				domain.DatabaseLayer,
+				domain.CodeTimeout,
+				domain.ErrDBConnectionTimeout,
+				err,
+			)
+		}
+		return nil, domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBConnectionFailed,
+			err,
+		)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if pingErr := client.Ping(ctx, nil); pingErr != nil {
+		_ = client.Disconnect(ctx)
+		return nil, domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBConnectionFailed,
+			pingErr,
+		)
+	}
+	database := client.Database(databaseName)
+
+	return &MongoDB{
+		client:   client,
+		database: database,
+	}, nil
+}
+
+func (m *MongoDB) Ping(ctx context.Context) error {
+	// Implement a ping method to check the connection to MongoDB
+	if err := m.client.Ping(ctx, nil); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return domain.NewAppError(
+				domain.DatabaseLayer,
+				domain.CodeTimeout,
+				domain.ErrDBConnectionTimeout,
+				err,
+			)
+		}
+		return domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBPingFailed,
+			err,
+		)
+	}
+	return nil
+}
+
+func (m *MongoDB) Close(ctx context.Context) error {
+	// Implement a method to close the MongoDB connection
+	if err := m.client.Disconnect(ctx); err != nil {
+		return domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBDisconnectFailed,
+			err,
+		)
+	}
+	return nil
+}
+
+func (m *MongoDB) Collection(collectionName string) *mongo.Collection {
+	// Implement a method to get a collection from the MongoDB database
+	return m.database.Collection(collectionName)
+}
+package domain
+
+// api/internal/domain/constants.go
+
+type TaskStatus string
+
+const (
+	TaskStatusQueued       TaskStatus = "QUEUED"
+	TaskStatusStarted      TaskStatus = "STARTED"
+	TaskStatusTranscribing TaskStatus = "TRANSCRIBING"
+	TaskStatusProcessing   TaskStatus = "PROCESSING"
+	TaskStatusCompleted    TaskStatus = "COMPLETED"
+	TaskStatusFailed       TaskStatus = "FAILED"
+	TaskStatusTimedOut     TaskStatus = "TIMEOUT"
+	TaskStatusCancelled    TaskStatus = "CANCELLED"
+	TaskStatusUnknown      TaskStatus = "UNKNOWN"
+)
+
+// helper to check if valid TaskStatus
+func (ts TaskStatus) IsValid() bool {
+	switch ts {
+	case TaskStatusQueued,
+		TaskStatusProcessing,
+		TaskStatusCompleted,
+		TaskStatusFailed,
+		TaskStatusTimedOut,
+		TaskStatusCancelled,
+		TaskStatusUnknown,
+		TaskStatusStarted,
+		TaskStatusTranscribing:
+		return true
+	default:
+		return false
+	}
+}
+
+// constants for TTL
+const (
+	CacheTTLSeconds = 3600 // 1 hour
+)
+package domain
+
+// api/internal/domain/entities.go
+
+import (
+	"time"
+)
+
+type Summary struct {
+	ID        string
+	VideoURL  string
+	Summary   string
+	ModelName string
+	CreatedAt time.Time
+}
+
+type BackgroundTaskStatus struct {
+	ID        string
+	VideoURL  string
+	Message   string
+	Status    TaskStatus
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+package domain
+
+import (
+	"fmt"
+)
+
+// api/internal/domain/errors.go
+
+type ErrorLayer string
+
+const (
+	ConfigLayer   ErrorLayer = "CONFIG_LAYER"
+	DatabaseLayer ErrorLayer = "DATABASE_LAYER"
+	CacheLayer    ErrorLayer = "CACHE_LAYER"
+	RepoLayer     ErrorLayer = "REPO_LAYER"
+	ServiceLayer  ErrorLayer = "SERVICE_LAYER"
+)
+
+type ErrorCode string
+
+const (
+	CodeNotFound            ErrorCode = "NOT_FOUND"
+	CodeInvalidInput        ErrorCode = "INVALID_INPUT"
+	CodeConnectionError     ErrorCode = "CONNECTION_ERROR"
+	CodeTimeout             ErrorCode = "TIMEOUT"
+	CodeInternalError       ErrorCode = "INTERNAL_ERROR"
+	CodeAlreadyExists       ErrorCode = "ALREADY_EXISTS"
+	CodeInsufficientData    ErrorCode = "INSUFFICIENT_DATA"
+	CodeInternalServerError ErrorCode = "INTERNAL_SERVER_ERROR"
+)
+
+type AppError struct {
+	ErrLayer ErrorLayer
+	ErrCode  ErrorCode
+	Message  string
+	Err      error
+}
+
+func (e AppError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("[%s][%s] %s: %v", e.ErrLayer, e.ErrCode, e.Message, e.Err)
+	}
+	return fmt.Sprintf("[%s][%s] %s", e.ErrLayer, e.ErrCode, e.Message)
+}
+
+func (e AppError) Unwrap() error {
+	return e.Err
+}
+
+func NewAppError(layer ErrorLayer, code ErrorCode, message string, err error) error {
+	return &AppError{
+		ErrLayer: layer,
+		ErrCode:  code,
+		Message:  message,
+		Err:      err,
+	}
+}
+
+// Defining all config errors
+const (
+	ErrConfigFileNotFound = "config file not found"
+	ErrConfigMissingField = "missing required configuration field"
+	ErrConfigInvalidValue = "invalid configuration value"
+)
+
+// Defining all DB errors
+const (
+	ErrDBClientNotInitialized = "database client is nil"
+	ErrDBConnectionFailed     = "failed to connect to database"
+	ErrDBConnectionTimeout    = "database connection timed out"
+	ErrDBDisconnectFailed     = "failed to disconnect from database"
+	ErrDBCollectionNotFound   = "database collection not found"
+	ErrDBPingFailed           = "failed to ping database"
+	ErrDBIndexCreationFailed  = "failed to create index in database"
+	ErrDBInsertFailed         = "failed to insert document into database"
+	ErrDBFindFailed           = "failed to find document in database"
+	ErrDBNoDocuments          = "no documents found in database"
+)
+
+// Defining all cache errors
+const (
+	ErrCacheClientNotInitialized = "cache client is nil"
+	ErrCacheConnectionFailed     = "failed to connect to cache"
+	ErrCacheConnectionTimeout    = "cache connection timed out"
+	ErrCachePingFailed           = "failed to ping cache"
+	ErrCacheDisconnectFailed     = "failed to disconnect from cache"
+	ErrCacheKeyNotFound          = "cache key not found"
+	ErrCacheSetFailed            = "failed to set cache value"
+	ErrCacheKeyAlreadyExists     = "cache key already exists"
+	ErrCacheGetFailed            = "failed to get cache value"
+	ErrCacheDeleteFailed         = "failed to delete cache value"
+)
+
+// Defining all Repo errors
+const (
+	ErrSummaryDBNotFound = "summary not found in database"
+	ErrTaskDBNotFound    = "task not found in database"
+
+	ErrSummaryCacheNotFound          = "summary not found in cache"
+	ErrTaskCacheNotFound             = "task not found in cache"
+	ErrVideoURLToTaskIDCacheNotFound = "video URL to task ID mapping not found in cache"
+)
+
+// Defining all Service errors
+const (
+	ErrVideoURLEmpty     = "video URL is empty"
+	ErrTaskIDEmpty       = "task ID is empty"
+	ErrInvalidVideoURL   = "invalid video URL"
+	ErrTaskAlreadyExists = "task already exists for the given video URL"
+	ErrInvalidTaskID     = "invalid task ID"
+)
+package repo
+
+// api/internal/repo/cache.go
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	domain "github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	redis "github.com/redis/go-redis/v9"
+)
+
+type CacheRepo struct {
+	client *redis.Client
+}
+
+func NewCacheRepo(redisClient *redis.Client) *CacheRepo {
+	return &CacheRepo{
+		client: redisClient,
+	}
+}
+
+type method string
+
+const (
+	GET method = "GET"
+	SET method = "SET"
+	DEL method = "DEL"
+)
+
+var metToStr = map[method]string{
+	GET: domain.ErrCacheGetFailed,
+	SET: domain.ErrCacheSetFailed,
+	DEL: domain.ErrCacheDeleteFailed,
+}
+
+func handleRedisError(err error, met method) error {
+	if errors.Is(err, redis.ErrPoolTimeout) {
+		return domain.NewAppError(
+			domain.CacheLayer,
+			domain.ErrCacheConnectionTimeout,
+			fmt.Sprintf("CacheRepo: %s", domain.ErrCacheConnectionTimeout),
+			err,
+		)
+	}
+	if errors.Is(err, redis.ErrClosed) {
+		return domain.NewAppError(
+			domain.CacheLayer,
+			domain.ErrCacheConnectionFailed,
+			fmt.Sprintf("CacheRepo: %s", domain.ErrCacheConnectionFailed),
+			err,
+		)
+	}
+	if errors.Is(err, redis.Nil) {
+		return domain.NewAppError(
+			domain.CacheLayer,
+			domain.ErrCacheKeyNotFound,
+			fmt.Sprintf("CacheRepo: %s", domain.ErrCacheKeyNotFound),
+			err,
+		)
+	}
+	return domain.NewAppError(
+		domain.CacheLayer,
+		domain.ErrCacheGetFailed,
+		fmt.Sprintf("CacheRepo: %s", metToStr[met]),
+		err,
+	)
+}
+
+func (r *CacheRepo) Set(ctx context.Context, key string, value any, ttl int64) error {
+	duration := time.Duration(ttl) * time.Second
+	if err := r.client.Set(ctx, key, value, duration).Err(); err != nil {
+		return handleRedisError(err, SET)
+	}
+	return nil
+}
+
+func (r *CacheRepo) SetNx(ctx context.Context, key string, value any, ttl int64) (bool, error) {
+	duration := time.Duration(ttl) * time.Second
+	isSet, err := r.client.SetNX(ctx, key, value, duration).Result()
+	// isSet will be true if the key was set, false if it already exists
+	if err != nil {
+		return false, handleRedisError(err, SET)
+	}
+	return isSet, nil
+}
+
+func (r *CacheRepo) Get(ctx context.Context, key string) ([]byte, error) {
+	value, err := r.client.Get(ctx, key).Bytes()
+	if err != nil {
+		return nil, handleRedisError(err, GET)
+	}
+	return value, nil
+}
+
+func (r *CacheRepo) GetTTl(ctx context.Context, key string) (time.Duration, error) {
+	ttl, err := r.client.TTL(ctx, key).Result()
+	if err != nil {
+		return 0, handleRedisError(err, GET)
+	}
+	return ttl, nil
+}
+
+func (r *CacheRepo) Exists(ctx context.Context, key string) (bool, error) {
+	exists, err := r.client.Exists(ctx, key).Result()
+	if err != nil {
+		return false, handleRedisError(err, GET)
+	}
+	return exists > 0, nil
+}
+
+func (r *CacheRepo) Delete(ctx context.Context, key string) error {
+	if err := r.client.Del(ctx, key).Err(); err != nil {
+		return handleRedisError(err, DEL)
+	}
+	return nil
+}
+package repo
+
+import (
+	"errors"
+	"fmt"
+
+	domain "github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+)
+
+// api/internal/repo/common.go
+
+// Common Repository error handlers
+
+func handleRepoFindError(err error, repoName string) error {
+	if mongo.IsTimeout(err) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeTimeout,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBConnectionTimeout),
+			err,
+		)
+	}
+	if errors.Is(err, mongo.ErrClientDisconnected) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeConnectionError,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBConnectionFailed),
+			err,
+		)
+	}
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeNotFound,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBNoDocuments),
+			err,
+		)
+	}
+	return domain.NewAppError(
+		domain.RepoLayer,
+		domain.CodeInternalError,
+		fmt.Sprintf("%s: %s", repoName, domain.ErrDBFindFailed),
+		err,
+	)
+}
+
+func handleRepoInsertError(err error, repoName string) error {
+	if mongo.IsDuplicateKeyError(err) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeAlreadyExists,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrTaskAlreadyExists),
+			err,
+		)
+	}
+	if mongo.IsTimeout(err) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeTimeout,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBConnectionTimeout),
+			err,
+		)
+	}
+	if errors.Is(err, mongo.ErrClientDisconnected) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeConnectionError,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBConnectionFailed),
+			err,
+		)
+	}
+	return domain.NewAppError(
+		domain.RepoLayer,
+		domain.CodeInternalError,
+		fmt.Sprintf("%s: %s", repoName, domain.ErrDBInsertFailed),
+		err,
+	)
+}
+
+func handleRepoDeleteError(err error, repoName string) error {
+	if mongo.IsTimeout(err) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeTimeout,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBConnectionTimeout),
+			err,
+		)
+	}
+	if errors.Is(err, mongo.ErrClientDisconnected) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeConnectionError,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBConnectionFailed),
+			err,
+		)
+	}
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeNotFound,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBNoDocuments),
+			err,
+		)
+	}
+	if mongo.IsNetworkError(err) {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeConnectionError,
+			fmt.Sprintf("%s: %s", repoName, domain.ErrDBConnectionFailed),
+			err,
+		)
+	}
+	return domain.NewAppError(
+		domain.RepoLayer,
+		domain.CodeInternalError,
+		fmt.Sprintf("%s: %s", repoName, domain.ErrDBInsertFailed),
+		err,
+	)
+}
+package repo
+
+// api/internal/repo/summary.go
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	db "github.com/jishnu70/Youtube_video_summarizer/internal/db"
+	domain "github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+type SummaryRepo struct {
+	collection *mongo.Collection
+}
+
+func NewSummaryRepo(mongoDB *db.MongoDB, collectionName string) (*SummaryRepo, error) {
+	if mongoDB == nil {
+		return nil, domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBClientNotInitialized,
+			errors.New("mongoDB client is nil"),
+		)
+	}
+	collection := mongoDB.Collection(collectionName)
+	return &SummaryRepo{
+		collection: collection,
+	}, nil
+}
+
+func (r *SummaryRepo) EnsureIndex(ctx context.Context) error {
+	indexModel := []mongo.IndexModel{
+		{Keys: bson.D{
+			{Key: "video_url", Value: 1},
+			{Key: "created_at", Value: -1},
+		}, Options: options.Index()},
+	}
+	_, err := r.collection.Indexes().CreateMany(ctx, indexModel)
+	if err != nil {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeInternalError,
+			fmt.Sprintf("SummaryRepo: %s", domain.ErrDBIndexCreationFailed),
+			err,
+		)
+	}
+	return nil
+}
+
+func (r *SummaryRepo) FindByVideoURL(ctx context.Context, videoURL string) (*domain.Summary, error) {
+	filter := bson.D{{Key: "video_url", Value: videoURL}}
+	opts := options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	var summary db.SummaryDB
+	err := r.collection.FindOne(ctx, filter, opts).Decode(&summary)
+	if err != nil {
+		return nil, handleRepoFindError(err, "SummaryRepo")
+	}
+	return summary.ToDomain(), nil
+}
+package repo
+
+// api/internal/repo/task.go
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	db "github.com/jishnu70/Youtube_video_summarizer/internal/db"
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+type TaskRepo struct {
+	// Implement the TaskRepo struct and its methods here
+	collection *mongo.Collection
+}
+
+func NewTaskRepo(mongoDB *db.MongoDB, collectionName string) (*TaskRepo, error) {
+	if mongoDB == nil {
+		return nil, domain.NewAppError(
+			domain.DatabaseLayer,
+			domain.CodeConnectionError,
+			domain.ErrDBClientNotInitialized,
+			errors.New("mongoDB client is nil"),
+		)
+	}
+	collection := mongoDB.Collection(collectionName)
+	return &TaskRepo{
+		collection: collection,
+	}, nil
+}
+
+// Implement the methods for TaskRepo here
+func (r *TaskRepo) EnsureIndex(ctx context.Context) error {
+	// Implement the logic to create indexes for the task collection
+	indexModel := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "video_url", Value: 1}}, Options: options.Index().SetUnique(true)},
+	}
+	_, err := r.collection.Indexes().CreateMany(ctx, indexModel)
+	if err != nil {
+		return domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeInternalError,
+			fmt.Sprintf("TaskRepo: %s", domain.ErrDBIndexCreationFailed),
+			err,
+		)
+	}
+	return nil
+}
+
+func (r *TaskRepo) Insert(ctx context.Context, task *domain.BackgroundTaskStatus) (*domain.BackgroundTaskStatus, error) {
+	if task == nil {
+		return nil, errors.New("task is nil")
+	}
+	dbTask := db.BackgroundTaskStatusDB{
+		ID:        bson.NewObjectID(),
+		VideoURL:  task.VideoURL,
+		Status:    task.Status,
+		CreatedAt: task.CreatedAt,
+		UpdatedAt: task.UpdatedAt,
+	}
+	_, err := r.collection.InsertOne(ctx, dbTask)
+	if err != nil {
+
+	}
+	return dbTask.ToDomain(), nil
+}
+
+func (r *TaskRepo) FindByID(ctx context.Context, id string) (*domain.BackgroundTaskStatus, error) {
+	bsonID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, domain.NewAppError(
+			domain.RepoLayer,
+			domain.CodeInvalidInput,
+			fmt.Sprintf("TaskRepo: %s", domain.ErrInvalidTaskID),
+			err,
+		)
+	}
+	var dbTask db.BackgroundTaskStatusDB
+	err = r.collection.FindOne(ctx, bson.M{"_id": bsonID}).Decode(&dbTask)
+	if err != nil {
+		return nil, handleRepoFindError(err, "TaskRepo")
+	}
+	return dbTask.ToDomain(), nil
+}
+
+func (r *TaskRepo) FindByVideoURL(ctx context.Context, videoURL string) (*domain.BackgroundTaskStatus, error) {
+	var dbTask db.BackgroundTaskStatusDB
+	err := r.collection.FindOne(ctx, bson.M{"video_url": videoURL}).Decode(&dbTask)
+	if err != nil {
+		return nil, handleRepoFindError(err, "TaskRepo")
+	}
+	return dbTask.ToDomain(), nil
+}
+package service
+
+// api/internal/service/cache.go
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	repo "github.com/jishnu70/Youtube_video_summarizer/internal/repo"
+)
+
+type CacheService struct {
+	cacheRepo *repo.CacheRepo
+}
+
+func NewCacheService(cacheRepo *repo.CacheRepo) (*CacheService, error) {
+	if cacheRepo == nil {
+		return nil, domain.ErrCacheRepoNotInitialized
+	}
+	return &CacheService{
+		cacheRepo: cacheRepo,
+	}, nil
+}
+
+type cacheType string
+
+const (
+	SummaryCacheKeyPrefix  cacheType = "summary:"
+	CacheTaskIDPrefix      cacheType = "task:id:"
+	CacheURLToTaskIDPrefix cacheType = "task:url:"
+)
+
+func generateCacheKey(videoURL string, keyType cacheType) string {
+	return string(keyType) + videoURL
+}
+
+func structToString(value any) ([]byte, error) {
+	jsonBytes, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return jsonBytes, nil
+}
+
+func stringToStruct(data []byte, value any) error {
+	if err := json.Unmarshal(data, value); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *CacheService) setCache(ctx context.Context, key string, value any, keyType cacheType, ttl int64) error {
+	if strings.TrimSpace(key) == "" {
+		return errors.New("cache key is empty")
+	}
+	if value == nil {
+		return errors.New("cache value is nil")
+	}
+	payload, err := structToString(value)
+	if err != nil {
+		return err
+	}
+	return s.cacheRepo.Set(ctx, generateCacheKey(key, keyType), payload, ttl)
+}
+
+func (s *CacheService) getCache(ctx context.Context, key string, value any, keyType cacheType) error {
+	if strings.TrimSpace(key) == "" {
+		return errors.New("cache key is empty")
+	}
+	data, err := s.cacheRepo.Get(ctx, generateCacheKey(key, keyType))
+	if err != nil {
+		return err
+	}
+	return stringToStruct(data, value)
+}
+
+func (s *CacheService) CacheSummary(ctx context.Context, videoURL string, value *domain.Summary, ttl int64) error {
+	if err := s.setCache(ctx, videoURL, value, SummaryCacheKeyPrefix, ttl); err != nil {
+		if errors.Is(err, domain.ErrCacheConnectionFailed) {
+			return fmt.Errorf("failed to cache summary due to cache connection failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheSetFailed) {
+			return fmt.Errorf("failed to cache summary due to cache set failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheConnectionTimeout) {
+			return fmt.Errorf("failed to cache summary due to cache connection timeout: %w", err)
+		}
+		return fmt.Errorf("failed to cache summary: %w", err)
+	}
+	return nil
+}
+
+func (s *CacheService) CacheTask(ctx context.Context, taskID string, value *domain.BackgroundTaskStatus, ttl int64) error {
+	if err := s.setCache(ctx, taskID, value, CacheTaskIDPrefix, ttl); err != nil {
+		if errors.Is(err, domain.ErrCacheConnectionFailed) {
+			return fmt.Errorf("failed to cache task due to cache connection failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheSetFailed) {
+			return fmt.Errorf("failed to cache task due to cache set failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheConnectionTimeout) {
+			return fmt.Errorf("failed to cache task due to cache connection timeout: %w", err)
+		}
+		return fmt.Errorf("failed to cache task: %w", err)
+	}
+	return nil
+}
+
+func (r *CacheService) CacheVideoURLToTaskID(ctx context.Context, videoURL string, taskID string, ttl int64) error {
+	if strings.TrimSpace(videoURL) == "" {
+		return domain.ErrVideoURLEmpty
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return domain.ErrTaskIDEmpty
+	}
+	if err := r.cacheRepo.Set(ctx, generateCacheKey(videoURL, CacheURLToTaskIDPrefix), taskID, ttl); err != nil {
+		if errors.Is(err, domain.ErrCacheConnectionFailed) {
+			return fmt.Errorf("failed to cache videoURL to taskID mapping due to cache connection failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheSetFailed) {
+			return fmt.Errorf("failed to cache videoURL to taskID mapping due to cache set failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheConnectionTimeout) {
+			return fmt.Errorf("failed to cache videoURL to taskID mapping due to cache connection timeout: %w", err)
+		}
+		return fmt.Errorf("failed to cache videoURL to taskID mapping: %w", err)
+	}
+	return nil
+}
+
+func (s *CacheService) GetCachedSummary(ctx context.Context, videoURL string) (*domain.Summary, error) {
+	var summary domain.Summary
+	if err := s.getCache(ctx, videoURL, &summary, SummaryCacheKeyPrefix); err != nil {
+		if errors.Is(err, domain.ErrCacheConnectionFailed) {
+			return nil, fmt.Errorf("failed to get cached summary due to cache connection failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheKeyNotFound) {
+			return nil, domain.ErrSummaryNotFound
+		}
+		if errors.Is(err, domain.ErrCacheConnectionTimeout) {
+			return nil, fmt.Errorf("failed to get cached summary due to cache connection timeout: %w", err)
+		}
+		return nil, err
+	}
+	return &summary, nil
+}
+
+func (s *CacheService) GetCachedTaskIDByVideoURL(ctx context.Context, videoURL string) (string, error) {
+	if strings.TrimSpace(videoURL) == "" {
+		return "", domain.ErrVideoURLEmpty
+	}
+	taskID, err := s.cacheRepo.Get(ctx, generateCacheKey(videoURL, CacheURLToTaskIDPrefix))
+	if err != nil {
+		if errors.Is(err, domain.ErrCacheConnectionFailed) {
+			return "", fmt.Errorf("failed to get cached taskID due to cache connection failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheKeyNotFound) {
+			return "", domain.ErrTaskIDNotFound
+		}
+		if errors.Is(err, domain.ErrCacheConnectionTimeout) {
+			return "", fmt.Errorf("failed to get cached taskID due to cache connection timeout: %w", err)
+		}
+		return "", fmt.Errorf("failed to get cached taskID: %w", err)
+	}
+	return string(taskID), nil
+}
+
+func (s *CacheService) GetCachedTaskStatus(ctx context.Context, taskID string) (*domain.BackgroundTaskStatus, error) {
+	var taskStatus domain.BackgroundTaskStatus
+	if err := s.getCache(ctx, taskID, &taskStatus, CacheTaskIDPrefix); err != nil {
+		if errors.Is(err, domain.ErrCacheConnectionFailed) {
+			return nil, fmt.Errorf("failed to get cached task status due to cache connection failure: %w", err)
+		}
+		if errors.Is(err, domain.ErrCacheKeyNotFound) {
+			return nil, domain.ErrTaskNotFound
+		}
+		if errors.Is(err, domain.ErrCacheConnectionTimeout) {
+			return nil, fmt.Errorf("failed to get cached task status due to cache connection timeout: %w", err)
+		}
+		return nil, fmt.Errorf("failed to get cached task status: %w", err)
+	}
+	return &taskStatus, nil
+}
+package service
+
+// api/internal/service/summary.go
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	repo "github.com/jishnu70/Youtube_video_summarizer/internal/repo"
+)
+
+type SummaryService struct {
+	summaryRepo  *repo.SummaryRepo
+	cacheService *CacheService
+}
+
+func NewSummaryService(
+	summaryRepo *repo.SummaryRepo,
+	cacheService *CacheService,
+) (*SummaryService, error) {
+	if summaryRepo == nil {
+		return nil, domain.ErrSummaryRepoNotInitialized
+	}
+	if cacheService == nil {
+		return nil, domain.ErrCacheServiceNotInitialized
+	}
+	return &SummaryService{
+		summaryRepo:  summaryRepo,
+		cacheService: cacheService,
+	}, nil
+}
+
+func (s *SummaryService) GetSummaryByVideoURL(ctx context.Context, videoURL string) (*domain.Summary, error) {
+	// Check if the videoURL is empty
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return nil, domain.ErrVideoURLEmpty
+	}
+
+	// Check if the summary is in the cache
+	summary, err := s.cacheService.GetCachedSummary(ctx, videoURL)
+	if err == nil {
+		return summary, nil
+	}
+
+	// If not in cache, fetch from the database
+	summary, err = s.summaryRepo.FindByVideoURL(ctx, videoURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch summary from database: %w", err)
+	}
+
+	// Cache the summary for future requests
+	err = s.cacheService.CacheSummary(ctx, videoURL, summary, 10)
+	if err != nil {
+		return summary, fmt.Errorf("failed to cache summary: %w", err)
+	}
+	return summary, nil
+}
+package service
+
+// api/internal/service/task.go
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	repo "github.com/jishnu70/Youtube_video_summarizer/internal/repo"
+)
+
+type TaskService struct {
+	taskRepo     *repo.TaskRepo
+	cacheService *CacheService
+}
+
+func NewTaskService(taskRepo *repo.TaskRepo, cacheService *CacheService) (*TaskService, error) {
+	if taskRepo == nil {
+		return nil, domain.ErrTaskRepoNotInitialized
+	}
+	if cacheService == nil {
+		return nil, domain.ErrCacheServiceNotInitialized
+	}
+	return &TaskService{
+		taskRepo:     taskRepo,
+		cacheService: cacheService,
+	}, nil
+}
+
+func (s *TaskService) CreateTask(ctx context.Context, videoURL string) (*domain.BackgroundTaskStatus, error) {
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return nil, domain.ErrVideoURLEmpty
+	}
+	now := time.Now().UTC()
+	task := &domain.BackgroundTaskStatus{
+		VideoURL:  videoURL,
+		Message:   "The video is queued for processing",
+		Status:    domain.TaskStatusQueued,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	result, err := s.taskRepo.Insert(ctx, task)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create task: %w", err)
+	}
+	err = s.cacheService.CacheTask(ctx, result.ID, result, 3600) // Cache for 1 hour
+	if err != nil {
+		return nil, fmt.Errorf("failed to cache task: %w", err)
+	}
+	err = s.cacheService.CacheVideoURLToTaskID(ctx, videoURL, result.ID, 3600) // Cache for 1 hou
+	if err != nil {
+		return nil, fmt.Errorf("failed to cache videoURL to taskID mapping: %w", err)
+	}
+	return result, nil
+}
+
+func (s *TaskService) GetTaskStatusByTaskID(ctx context.Context, taskID string) (*domain.BackgroundTaskStatus, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, domain.ErrTaskIDEmpty
+	}
+	task, err := s.cacheService.GetCachedTaskStatus(ctx, taskID)
+	if err == nil {
+		return task, nil
+	}
+	task, err = s.taskRepo.FindByID(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch task from database: %w", err)
+	}
+	err = s.cacheService.CacheTask(ctx, task.ID, task, 120) // Cache for 2 minutes
+	if err != nil {
+		return task, fmt.Errorf("failed to cache task: %w", err)
+	}
+	return task, nil
+}
+
+func (s *TaskService) GetTaskStatusByVideoURL(ctx context.Context, videoURL string) (*domain.BackgroundTaskStatus, error) {
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return nil, domain.ErrVideoURLEmpty
+	}
+	taskID, err := s.cacheService.GetCachedTaskIDByVideoURL(ctx, videoURL)
+	if err == nil {
+		result, err := s.cacheService.GetCachedTaskStatus(ctx, taskID)
+		if err != nil {
+			return s.GetTaskStatusByTaskID(ctx, taskID)
+		}
+		return result, nil
+	}
+	result, err := s.taskRepo.FindByVideoURL(ctx, videoURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch task from database: %w", err)
+	}
+	err = s.cacheService.CacheTask(ctx, result.ID, result, 120) // Cache for 2 minutes
+	if err != nil {
+		return result, fmt.Errorf("failed to cache task: %w", err)
+	}
+	err = s.cacheService.CacheVideoURLToTaskID(ctx, videoURL, result.ID, 3600) // Cache for 1 hour
+	if err != nil {
+		return result, fmt.Errorf("failed to cache videoURL to taskID mapping: %w", err)
+	}
+	return result, nil
+}
+package handler
+
+// api/requests/handler/handler.go
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	domain "github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+	service "github.com/jishnu70/Youtube_video_summarizer/internal/service"
+	schema "github.com/jishnu70/Youtube_video_summarizer/requests/schema"
+)
+
+type RequestHandler struct {
+	summaryService *service.SummaryService
+	taskService    *service.TaskService
+}
+
+func NewRequestHandler(
+	summaryService *service.SummaryService,
+	taskService *service.TaskService,
+) *RequestHandler {
+	if summaryService == nil {
+		panic("summaryService is nil")
+	}
+	if taskService == nil {
+		panic("taskService is nil")
+	}
+	return &RequestHandler{
+		summaryService: summaryService,
+		taskService:    taskService,
+	}
+}
+
+func (h *RequestHandler) GetSummary(ctx *gin.Context) {
+	var videoURLBinding schema.SummaryRequest
+	if err := ctx.ShouldBindQuery(&videoURLBinding); err != nil {
+		ctx.Error(err)
+		return
+	}
+
+	summary, err := h.summaryService.GetSummaryByVideoURL(ctx.Request.Context(), videoURLBinding.VideoURL)
+	if err != nil {
+		if errors.Is(err, domain.ErrSummaryNotFound) {
+			if exists, checkErr := checkYouTubeVideoExists(videoURLBinding.VideoURL); checkErr != nil {
+				ctx.Error(checkErr)
+				return
+			} else if !exists {
+				ctx.JSON(http.StatusNotFound, gin.H{"error": "YouTube video does not exist."})
+				return
+			}
+
+			// Create a new background task for the video
+			task, taskErr := h.taskService.CreateTask(ctx.Request.Context(), videoURLBinding.VideoURL)
+			if taskErr != nil {
+				ctx.Error(fmt.Errorf("failed to create background task: %w", taskErr))
+				return
+			}
+			ctx.JSON(http.StatusAccepted, schema.NewTaskStatusResponse(task))
+			return
+		}
+		ctx.Error(err)
+		return
+	}
+
+	ctx.JSON(http.StatusOK, schema.NewSummaryResponse(summary))
+}
+
+func (h *RequestHandler) GetTaskStatus(ctx *gin.Context) {
+	var taskIDBinding schema.TaskStatusRequest
+	if err := ctx.ShouldBindQuery(&taskIDBinding); err != nil {
+		ctx.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	taskID := taskIDBinding.TaskID
+	videoURL := taskIDBinding.VideoURL
+	if taskID == "" && videoURL == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: insufficient parameters provided."})
+		return
+	}
+
+	var taskStatus *domain.BackgroundTaskStatus
+	var err error
+	if taskID != "" {
+		taskStatus, err = h.taskService.GetTaskStatusByTaskID(ctx.Request.Context(), taskID)
+	} else {
+		taskStatus, err = h.taskService.GetTaskStatusByVideoURL(ctx.Request.Context(), videoURL)
+	}
+
+	if err != nil {
+		ctx.Error(err)
+		return
+	}
+
+	if taskStatus == nil {
+		ctx.Error(domain.ErrTaskNotFound)
+		return
+	}
+
+	ctx.JSON(http.StatusOK, schema.NewTaskStatusResponse(taskStatus))
+}
+
+func checkYouTubeVideoExists(videoURL string) (bool, error) {
+	// Build the oEmbed endpoint URL
+
+	_, err := url.ParseRequestURI(videoURL)
+	if err != nil {
+		return false, fmt.Errorf("invalid video URL: %w", err)
+	}
+
+	oembedBaseURL := "https://www.youtube.com/oembed"
+	params := url.Values{}
+	params.Set("url", videoURL)
+	oembedURL := fmt.Sprintf("%s?%s", oembedBaseURL, params.Encode())
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(oembedURL)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	// If the video doesn't exist, is private, or is deleted,
+	// the oEmbed API reliably returns a 404 Not Found or 400 Bad Request.
+	if resp.StatusCode == http.StatusOK {
+		return true, nil
+	}
+
+	return false, nil
+}
+package schema
+
+// api/requests/schema/schema.go
+
+import (
+	"time"
+
+	domain "github.com/jishnu70/Youtube_video_summarizer/internal/domain"
+)
+
+type SummaryRequest struct {
+	VideoURL string `form:"video_url" binding:"required,url"`
+}
+
+type SummaryResponse struct {
+	ID        string    `json:"id"`
+	VideoURL  string    `json:"video_url"`
+	Summary   string    `json:"summary"`
+	ModelName string    `json:"model_name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func NewSummaryResponse(summary *domain.Summary) *SummaryResponse {
+	return &SummaryResponse{
+		ID:        summary.ID,
+		VideoURL:  summary.VideoURL,
+		Summary:   summary.Summary,
+		ModelName: summary.ModelName,
+		CreatedAt: summary.CreatedAt,
+	}
+}
+
+type TaskStatusRequest struct {
+	TaskID   string `form:"task_id,omitempty"`
+	VideoURL string `form:"video_url,omitempty"`
+}
+
+type TaskStatusResponse struct {
+	ID        string    `json:"id"`
+	VideoURL  string    `json:"video_url"`
+	Message   string    `json:"message"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func NewTaskStatusResponse(task *domain.BackgroundTaskStatus) *TaskStatusResponse {
+	return &TaskStatusResponse{
+		ID:        task.ID,
+		VideoURL:  task.VideoURL,
+		Message:   task.Message,
+		Status:    string(task.Status),
+		CreatedAt: task.CreatedAt,
+		UpdatedAt: task.UpdatedAt,
+	}
+}

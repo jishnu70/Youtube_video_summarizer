@@ -3,7 +3,6 @@ package config
 // api/internal/config/config.go
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -28,15 +27,19 @@ type Config struct {
 	RedisPassword string
 }
 
-func LoadConfig() *Config {
+func LoadConfig() (*Config, error) {
 	config := &Config{}
-	config.LoadMongoConfig()
-	config.loadRedisConfig()
+	if err := config.LoadMongoConfig(); err != nil {
+		return nil, err
+	}
+	if err := config.loadRedisConfig(); err != nil {
+		return nil, err
+	}
 
-	return config
+	return config, nil
 }
 
-func (c *Config) LoadMongoConfig() {
+func (c *Config) LoadMongoConfig() error {
 	envMapping := []struct {
 		key   string
 		value *string
@@ -50,13 +53,19 @@ func (c *Config) LoadMongoConfig() {
 	for _, env := range envMapping {
 		value := os.Getenv(env.key)
 		if value == "" {
-			panic(errors.New("DB:" + domain.ErrConfigMissingField.Error() + ": " + env.key))
+			return domain.NewAppError(
+				domain.ConfigLayer,
+				domain.CodeInvalidInput,
+				fmt.Sprintf("%s: %s", domain.ErrConfigMissingField, env.key),
+				nil,
+			)
 		}
 		*env.value = value
 	}
+	return nil
 }
 
-func (c *Config) loadRedisConfig() {
+func (c *Config) loadRedisConfig() error {
 	envMapping := []struct {
 		key   string
 		value *string
@@ -68,7 +77,12 @@ func (c *Config) loadRedisConfig() {
 	for _, env := range envMapping {
 		value := os.Getenv(env.key)
 		if value == "" {
-			panic(errors.New("Redis" + domain.ErrConfigMissingField.Error() + ": " + env.key))
+			return domain.NewAppError(
+				domain.ConfigLayer,
+				domain.CodeInvalidInput,
+				fmt.Sprintf("%s: %s", domain.ErrConfigMissingField, env.key),
+				nil,
+			)
 		}
 		*env.value = value
 	}
@@ -76,14 +90,26 @@ func (c *Config) loadRedisConfig() {
 	// Handle REDIS_PORT separately since it needs to be converted to an integer
 	portStr := os.Getenv("REDIS_PORT")
 	if portStr == "" {
-		panic(errors.New("Redis" + domain.ErrConfigMissingField.Error() + ": REDIS_PORT"))
+		return domain.NewAppError(
+			domain.ConfigLayer,
+			domain.CodeInvalidInput,
+			fmt.Sprintf("%s: %s", domain.ErrConfigMissingField, "REDIS_PORT"),
+			nil,
+		)
 	}
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		panic(errors.New("Redis: invalid REDIS_PORT value: " + portStr))
+		return domain.NewAppError(
+			domain.ConfigLayer,
+			domain.CodeInvalidInput,
+			fmt.Sprintf("%s: %s", domain.ErrConfigInvalidValue, "REDIS_PORT"),
+			err,
+		)
 	}
 	c.RedisPort = port
 
 	c.RedisAddr = fmt.Sprintf("%s:%d", c.RedisHost, c.RedisPort)
+
+	return nil
 }

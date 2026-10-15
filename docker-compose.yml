@@ -1,0 +1,61 @@
+services:
+  go-api:
+    container_name: go-api
+    build:
+      context: .
+      dockerfile: api/api.dockerfile
+    ports:
+      - "8080:8080"
+    restart: on-failure
+    environment:
+      - MONGO_URI=mongodb://root:example@mongo:27017/
+      - MONGO_DATABASE=summarizer
+      - TASK_COLLECTION=tasks
+      - SUMMARY_COLLECTION=summaries
+
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=example
+
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  mongo:
+    container_name: mongo
+    image: mongo:8.0.4
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo-express:
+    container_name: mongo-express
+    image: mongo-express:1.0.0
+    restart: always
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: root
+      ME_CONFIG_MONGODB_ADMINPASSWORD: example
+      ME_CONFIG_MONGODB_SERVER: mongo
+    ports:
+      - "8081:8081"
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  redis:
+    container_name: redis
+    image: redis:7.2-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass example
