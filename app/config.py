@@ -1,22 +1,24 @@
 # app/config.py
 
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field
+from pydantic.types import StringConstraints
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = Field(...)
+    DATABASE_URL: NonEmptyStr = Field(...)
+    REDIS_URL: NonEmptyStr = Field(...)
 
-    @field_validator("DATABASE_URL")
-    @classmethod
-    def validate_database_url(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("DATABASE_URL cannot be empty")
-        return v
-
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 @lru_cache
