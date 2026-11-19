@@ -4,7 +4,7 @@ import logging
 from functools import lru_cache
 
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import selectinload
 from sqlmodel import desc, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -29,6 +29,7 @@ class DatabaseRepository:
         """
         query = (
             select(Summary)
+            .options(selectinload(Summary.video))  # type: ignore
             .join(Video)
             .where(Video.url == url)
             .order_by(desc(Summary.created_at))
@@ -57,7 +58,7 @@ class DatabaseRepository:
         """
         query = (
             select(Task)
-            .options(joinedload(Task.summary))  # type: ignore
+            .options(selectinload(Task.summary))  # type: ignore
             .where(Task.polling_id == polling_id)
             .limit(1)
         )
@@ -81,7 +82,11 @@ class DatabaseRepository:
             Task | None: The task associated with the video if found, otherwise None.
         """
         query = (
-            select(Task).where(Task.url == url).order_by(desc(Task.created_at)).limit(1)
+            select(Task)
+            .options(selectinload(Task.summary))  # type: ignore
+            .where(Task.url == url)
+            .order_by(desc(Task.created_at))
+            .limit(1)
         )
         try:
             result = await db.exec(query)
@@ -127,10 +132,11 @@ class DatabaseRepository:
             Task | None: The updated task if successful, otherwise None.
         """
         try:
+            persistent_task = await db.merge(task)
             await db.flush()
             await db.commit()
-            await db.refresh(task)
-            return task
+            await db.refresh(persistent_task)
+            return persistent_task
         except (SQLAlchemyError, DBAPIError) as e:
             logger.error(f"Error updating task: {e}")
             await db.rollback()
